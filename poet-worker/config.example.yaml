@@ -1,0 +1,27 @@
+# Poet worker configuration
+# Copy to config.yaml and adjust for your environment.
+
+# Path to the honeypoet SQLite database
+db: /path/to/honeypoet.db
+
+# LLM server URL (OpenAI-compatible endpoint)
+# Local: point to your llama-server instance
+# Cloud: use the provider's base URL (e.g. https://api.openai.com)
+llm_url: http://your-llm-server:8080
+
+# Cloud LLM provider settings (optional)
+# When llm_api_key is set, the worker uses /v1/chat/completions with Bearer auth.
+# When omitted, it uses the legacy /v1/completions endpoint (local llama-server).
+# llm_api_key: sk-your-api-key-here
+# llm_model: gpt-4o-mini
+#
+# Examples:
+#   OpenAI:   llm_url: https://api.openai.com   llm_model: gpt-4o-mini
+#   Together: llm_url: https://api.together.xyz  llm_model: meta-llama/Llama-3-8b-chat-hf
+#   Groq:     llm_url: https://api.groq.com/openai  llm_model: llama3-8b-8192
+
+# How often to poll for new visits (e.g. 30s, 1m, 5m)
+interval: 30s
+
+# Max visits to process per poll cycle
+batch: 5

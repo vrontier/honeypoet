@@ -1,0 +1,28 @@
+# Design docs — local only, not for public eyes
+DESIGN.md
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Compiled binaries
+poet-worker/poet-worker
+
+# Runtime config (contains local paths and endpoints)
+poet-worker/config.yaml
+
+# Deployment scripts — server-specific, not for public use
+deploy/
+scripts/
+
+# SQLite databases
+*.db
+*.db-wal
+*.db-shm
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
