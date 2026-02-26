@@ -114,7 +114,8 @@ if ($clean_path === '/_api/recent' && $method === 'GET') {
         $rows = $db->query('
             SELECT v.id, v.timestamp, v.source_ip, v.country, v.city, v.path,
                    v.attack_category, v.response_type, v.response_content,
-                   v.llm_generated, vis.name AS visitor_name
+                   v.llm_generated, vis.name AS visitor_name,
+                   vis.behavior AS visitor_behavior
             FROM visits v
             LEFT JOIN visitors vis ON v.visitor_id = vis.id
             ORDER BY v.id DESC
@@ -177,7 +178,8 @@ if ($clean_path === '/_api/poems' && $method === 'GET') {
         // Paginated rows
         $sql = 'SELECT v.id, v.timestamp, v.country, v.attack_category,
                        v.response_type, v.response_content, v.path,
-                       vis.name AS visitor_name
+                       vis.name AS visitor_name,
+                       vis.behavior AS visitor_behavior
                 FROM visits v
                 LEFT JOIN visitors vis ON v.visitor_id = vis.id
                 WHERE ' . $where . '
@@ -444,6 +446,12 @@ try {
         last_seen   TEXT NOT NULL DEFAULT (strftime(\'%Y-%m-%dT%H:%M:%SZ\', \'now\')),
         visit_count INTEGER NOT NULL DEFAULT 1
     )');
+
+    // Schema migration: add behavior column to visitors if missing
+    $vis_columns = array_column($db->query('PRAGMA table_info(visitors)')->fetchAll(), 'name');
+    if (!in_array('behavior', $vis_columns, true)) {
+        $db->exec('ALTER TABLE visitors ADD COLUMN behavior TEXT');
+    }
 
     // Indexes for common queries
     $db->exec('CREATE INDEX IF NOT EXISTS idx_visits_timestamp ON visits (timestamp)');
@@ -1080,6 +1088,9 @@ function serve_gallery(): void
                 var text = isCode ? (v.response_content || '').trim() : cleanPoemForCard(v.response_content);
                 if (!text) continue;
                 var nameStr = v.visitor_name || 'Someone';
+                if (v.visitor_behavior) {
+                    nameStr += ', the ' + v.visitor_behavior.charAt(0).toUpperCase() + v.visitor_behavior.slice(1);
+                }
                 var countryName = v.country ? (CC[v.country] || v.country) : '';
                 var path = v.path || '/';
                 var cat = v.attack_category || '';

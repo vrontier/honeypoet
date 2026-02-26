@@ -60,6 +60,8 @@ type visit struct {
 	AttackCategory string
 	UserAgent      string
 	VisitorID      sql.NullInt64
+	Behavior       string
+	VisitCount     int
 }
 
 func main() {
@@ -98,6 +100,9 @@ func main() {
 	}
 	log.Printf("connected to %s", cfg.DB)
 
+	// Schema migration: ensure behavior column exists on visitors
+	migrateSchema(db)
+
 	llm := newLLMClient(cfg.LLMURL, cfg.LLMKey, cfg.LLMModel)
 	if cfg.LLMKey != "" {
 		log.Printf("LLM endpoint: %s (cloud, model: %s)", cfg.LLMURL, cfg.LLMModel)
@@ -124,6 +129,91 @@ func main() {
 			return
 		}
 	}
+}
+
+// migrateSchema adds new columns to existing tables if missing.
+func migrateSchema(db *sql.DB) {
+	// Check if behavior column exists on visitors
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('visitors') WHERE name = 'behavior'`).Scan(&count)
+	if err != nil {
+		log.Printf("schema check: %v", err)
+		return
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE visitors ADD COLUMN behavior TEXT`); err != nil {
+			log.Printf("schema migration (behavior): %v", err)
+		} else {
+			log.Printf("schema migration: added behavior column to visitors")
+		}
+	}
+}
+
+// computeBehavior classifies a visitor's scanning pattern based on their history.
+// Priority: hectic > relentless > methodical > patient > curious > ghostly.
+func computeBehavior(db *sql.DB, visitorID int64) (behavior string, visitCount int) {
+	var cnt int
+	var cats int
+	var firstTS, lastTS string
+
+	err := db.QueryRow(`
+		SELECT COUNT(*) as cnt,
+		       COUNT(DISTINCT attack_category) as cats,
+		       MIN(timestamp) as first_ts,
+		       MAX(timestamp) as last_ts
+		FROM visits WHERE visitor_id = ?
+	`, visitorID).Scan(&cnt, &cats, &firstTS, &lastTS)
+	if err != nil {
+		return "", 0
+	}
+
+	visitCount = cnt
+
+	if cnt <= 1 {
+		return "ghostly", cnt
+	}
+
+	// Parse time span
+	first, err1 := time.Parse("2006-01-02T15:04:05Z", firstTS)
+	last, err2 := time.Parse("2006-01-02T15:04:05Z", lastTS)
+	if err1 != nil || err2 != nil {
+		// Fallback: try without T separator
+		first, err1 = time.Parse("2006-01-02 15:04:05", firstTS)
+		last, err2 = time.Parse("2006-01-02 15:04:05", lastTS)
+	}
+
+	var spanMinutes float64
+	if err1 == nil && err2 == nil {
+		spanMinutes = last.Sub(first).Minutes()
+	}
+
+	// Hectic: >10 req/min, broad categories, short span
+	if spanMinutes > 0 && float64(cnt)/spanMinutes > 10 && cats >= 2 {
+		return "hectic", cnt
+	}
+
+	// Relentless: 50+ visits, focused on 1-2 categories
+	if cnt >= 50 && cats <= 2 {
+		return "relentless", cnt
+	}
+
+	// Methodical: 4+ attack categories, systematic
+	if cats >= 4 {
+		return "methodical", cnt
+	}
+
+	// Patient: span >24h, keeps returning
+	if spanMinutes > 24*60 {
+		return "patient", cnt
+	}
+
+	// Curious: 2-3 categories, moderate pace
+	if cats >= 2 && cats <= 3 {
+		return "curious", cnt
+	}
+
+	// Default for single-category, moderate visitors
+	return "ghostly", cnt
 }
 
 // processVisits finds unprocessed visits and generates poems for them.
@@ -163,9 +253,23 @@ func processVisits(db *sql.DB, llm *llmClient, batchSize int) {
 	log.Printf("found %d visits to process", len(visits))
 
 	for _, v := range visits {
-		// Try to reuse a recent poem from the same visitor (within 4 hours)
+		// Compute behavioral profile for this visitor
+		var behavior string
 		if v.VisitorID.Valid {
-			rtype, poem, found := findRecentPoem(db, v.VisitorID.Int64)
+			behavior, v.VisitCount = computeBehavior(db, v.VisitorID.Int64)
+			v.Behavior = behavior
+
+			// Store behavior on the visitor record
+			if behavior != "" {
+				if _, err := db.Exec(`UPDATE visitors SET behavior = ? WHERE id = ?`, behavior, v.VisitorID.Int64); err != nil {
+					log.Printf("update behavior for visitor %d: %v", v.VisitorID.Int64, err)
+				}
+			}
+		}
+
+		// Try to reuse a recent poem from the same visitor (same category, within 1 hour)
+		if v.VisitorID.Valid {
+			rtype, poem, found := findRecentPoem(db, v.VisitorID.Int64, v.AttackCategory)
 			if found {
 				if _, err := db.Exec(`UPDATE visits SET response_type = ?, response_content = ?, llm_generated = 1 WHERE id = ?`,
 					rtype, poem, v.ID); err != nil {
@@ -177,7 +281,7 @@ func processVisits(db *sql.DB, llm *llmClient, batchSize int) {
 			}
 		}
 
-		prompt, respType := promptForVisit(v)
+		prompt, respType := promptForVisit(v, behavior)
 		poem, err := llm.generate(prompt)
 		if err != nil {
 			log.Printf("LLM error for visit %d (%s %s): %v", v.ID, v.Method, v.Path, err)
@@ -199,21 +303,23 @@ func processVisits(db *sql.DB, llm *llmClient, batchSize int) {
 			continue
 		}
 
-		log.Printf("visit %d (%s/%s): poem generated (%d chars)", v.ID, v.AttackCategory, respType, len(poem))
+		log.Printf("visit %d (%s/%s, %s): poem generated (%d chars)", v.ID, v.AttackCategory, respType, behavior, len(poem))
 	}
 }
 
-// findRecentPoem looks for an existing LLM poem from the same visitor within 4 hours.
-func findRecentPoem(db *sql.DB, visitorID int64) (responseType, poem string, found bool) {
+// findRecentPoem looks for an existing LLM poem from the same visitor and attack
+// category within 1 hour.
+func findRecentPoem(db *sql.DB, visitorID int64, category string) (responseType, poem string, found bool) {
 	err := db.QueryRow(`
 		SELECT response_type, response_content
 		FROM visits
 		WHERE visitor_id = ?
+		  AND attack_category = ?
 		  AND llm_generated = 1
-		  AND timestamp >= datetime('now', '-4 hours')
+		  AND timestamp >= datetime('now', '-1 hour')
 		ORDER BY id DESC
 		LIMIT 1
-	`, visitorID).Scan(&responseType, &poem)
+	`, visitorID, category).Scan(&responseType, &poem)
 	if err != nil {
 		return "", "", false
 	}
