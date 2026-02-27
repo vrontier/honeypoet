@@ -4,9 +4,10 @@ import "testing"
 
 func TestCleanPoem(t *testing.T) {
 	tests := []struct {
-		name string
-		raw  string
-		want string
+		name   string
+		raw    string
+		prompt string
+		want   string
 	}{
 		{
 			name: "clean poem unchanged",
@@ -73,11 +74,85 @@ func TestCleanPoem(t *testing.T) {
 			raw:  "Close with a gentle invitation to return.\n\nA fleeting whisper, a digital knock,\nFrom Tokyo's heart, a silent clock.",
 			want: "A fleeting whisper, a digital knock,\nFrom Tokyo's heart, a silent clock.",
 		},
+		{
+			name: "self-instruction prefix stripped",
+			raw:  "Each line should end with a shrine name, and the shrine name must be a palindrome.\n\nA traveler scans:\nStockholm's streets, WP found,\nIn a palindrome shrine.",
+			want: "A traveler scans:\nStockholm's streets, WP found,\nIn a palindrome shrine.",
+		},
+		{
+			name: "answer after separator",
+			raw:  "Reflect on the scanner's visits as growth rings of curiosity.\n\n---\n\nAnswer:\n\nRing of inquiry,\nStockholm's gentle probe,\nCuriosity's tree.",
+			want: "Ring of inquiry,\nStockholm's gentle probe,\nCuriosity's tree.",
+		},
+		{
+			name: "trailing note after separator",
+			raw:  "In the digital tide,\nHoneypoet listens,\nChange flows, truth stays.\n\n---\n\nNote: This poem does not include the requested haiku, but it captures the essence.",
+			want: "In the digital tide,\nHoneypoet listens,\nChange flows, truth stays.",
+		},
+		{
+			name: "no more no less prefix",
+			raw:  "No more, no less. And no less than one word in each line.\n\nIn the sea's embrace,\nStockholm's visitor,\nTides return, repeat.",
+			want: "In the sea's embrace,\nStockholm's visitor,\nTides return, repeat.",
+		},
+		{
+			name: "prompt template echo stripped",
+			raw:  "- Title: <title-of-poem>\n- Lines: <lines-of-poem>\n\nTitle: The Single Thread\nLines:\nIn solitude, a seeker weaves its art.",
+			want: "In solitude, a seeker weaves its art.",
+		},
+		{
+			name: "pure self-constraints no poem",
+			raw:  "- Reflect on the human desire to return, revisit, and renew.\n- Use a metaphor of the sea to explore this impulse.\n- Contrast the constancy of tides with the unique nature of each visit.",
+			want: "",
+		},
+		{
+			name: "spill prefix then poem",
+			raw:  "No other introductions.\n\nWisdom's thin line grows,\nStockholm's hand, a gentle touch,\nGrowth in wood, unseen.",
+			want: "Wisdom's thin line grows,\nStockholm's hand, a gentle touch,\nGrowth in wood, unseen.",
+		},
+		{
+			name: "haiku label before poem",
+			raw:  "Reflect on the pilgrimage of the internet and its travelers.\n\nHaiku:\n\nScans probe in Sweden,\nWordpress seeks truth anew.\nPilgrimage of data.",
+			want: "Scans probe in Sweden,\nWordpress seeks truth anew.\nPilgrimage of data.",
+		},
+		{
+			name: "word constraints then poem",
+			raw:  "- The word \"tree\"\n- The word \"visitor\"\n\n- Tree's thin rings\n- Visitor's steady probe\n- Stockholm's 34th knock.",
+			want: "- Tree's thin rings\n- Visitor's steady probe\n- Stockholm's 34th knock.",
+		},
+		{
+			name: "standalone honeypoet too short",
+			raw:  "Honeypoet",
+			want: "",
+		},
+		{
+			name: "syllable constraints no poem",
+			raw:  "- Lines of 5-6 syllables\n- Include the words \"torrid,\" \"window,\" and \"knocks\"\n- No punctuation\n- No capitalization",
+			want: "",
+		},
+		// Prompt-aware echo detection tests
+		{
+			name:   "prompt echo: format line repeated in response",
+			raw:    "Waves lap at the shore.\n\nHaiku (5-7-5 syllables, three lines), evoking tides:\nAnother wave comes.",
+			prompt: "Write only the poem.\n\nA scanner just probed:\n\nHaiku (5-7-5 syllables, three lines), evoking tides:\n",
+			want:   "Waves lap at the shore.",
+		},
+		{
+			name:   "prompt echo: preamble echoed before poem",
+			raw:    "Your tone is curious, warm, and philosophical. Never hostile or mocking.\n\nStockholm calls again,\nWordPress sleeps in silence here,\nDoor of fog remains.",
+			prompt: "You are the Honeypoet.\nYour tone is curious, warm, and philosophical. Never hostile or mocking.\n\nA scanner just probed:\n\nHaiku:\n",
+			want:   "Stockholm calls again,\nWordPress sleeps in silence here,\nDoor of fog remains.",
+		},
+		{
+			name:   "prompt echo: context line echoed",
+			raw:    "- Path: /wp-admin/setup-config.php\n- From: Stockholm, SE\n\nThe pilgrim returns,\nKnocking on the fog again,\nNo WordPress was here.",
+			prompt: "Preamble here.\n\nA scanner just probed:\n- Path: /wp-admin/setup-config.php\n- From: Stockholm, SE\n\nHaiku:\n",
+			want:   "The pilgrim returns,\nKnocking on the fog again,\nNo WordPress was here.",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := cleanPoem(tt.raw)
+			got := cleanPoem(tt.raw, tt.prompt)
 			if got != tt.want {
 				t.Errorf("cleanPoem() =\n%q\nwant:\n%q", got, tt.want)
 			}

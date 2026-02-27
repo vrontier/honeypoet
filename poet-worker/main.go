@@ -371,13 +371,19 @@ func responseTypeFor(category string) string {
 	}
 }
 
-// runCleanup re-runs cleanPoem on all stored poems. Poems that become empty
-// are marked as failed. This is for one-time use after improving the cleanup logic.
+// runCleanup re-runs cleanPoem on all stored poems, reconstructing the original
+// prompt for prompt-aware echo detection. Poems that become empty are marked as
+// failed. This is for one-time use after improving the cleanup logic.
 func runCleanup(db *sql.DB, dryRun bool) {
 	rows, err := db.Query(`
-		SELECT id, response_content FROM visits
-		WHERE llm_generated = 1 AND response_content IS NOT NULL
-		ORDER BY id
+		SELECT v.id, v.response_content, v.path, v.method,
+			COALESCE(v.city, ''), COALESCE(v.country, ''),
+			v.attack_category, COALESCE(v.user_agent, ''),
+			v.visitor_id, COALESCE(vr.behavior, '')
+		FROM visits v
+		LEFT JOIN visitors vr ON v.visitor_id = vr.id
+		WHERE v.llm_generated = 1 AND v.response_content IS NOT NULL
+		ORDER BY v.id
 	`)
 	if err != nil {
 		log.Fatalf("query: %v", err)
@@ -388,12 +394,16 @@ func runCleanup(db *sql.DB, dryRun bool) {
 	for rows.Next() {
 		var id int64
 		var content string
-		if err := rows.Scan(&id, &content); err != nil {
+		var v visit
+		if err := rows.Scan(&id, &content, &v.Path, &v.Method, &v.City, &v.Country,
+			&v.AttackCategory, &v.UserAgent, &v.VisitorID, &v.Behavior); err != nil {
 			log.Printf("scan row: %v", err)
 			continue
 		}
 
-		cleaned := cleanPoem(content)
+		// Reconstruct prompt for echo detection
+		prompt, _ := promptForVisit(v, v.Behavior)
+		cleaned := cleanPoem(content, prompt)
 		if cleaned == content {
 			continue
 		}
