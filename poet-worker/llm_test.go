@@ -129,6 +129,47 @@ func TestCleanPoem(t *testing.T) {
 			raw:  "- Lines of 5-6 syllables\n- Include the words \"torrid,\" \"window,\" and \"knocks\"\n- No punctuation\n- No capitalization",
 			want: "",
 		},
+		// Contamination cleanup tests
+		{
+			name: "Honeypoet: prefix stripped",
+			raw:  "Honeypoet:\nA knock echoes through the wire,\nSeeking what was never there.",
+			want: "A knock echoes through the wire,\nSeeking what was never there.",
+		},
+		{
+			name: "Your poem: prefix stripped",
+			raw:  "Your poem:\nThe fog rolls in from distant shores,\nA scanner's breath upon the door.",
+			want: "The fog rolls in from distant shores,\nA scanner's breath upon the door.",
+		},
+		{
+			name: "Mention instruction echo is noise",
+			raw:  "- Mention the city and country of origin\n- Incorporate the idea of digital wandering\n- Start with: a question about belonging",
+			want: "",
+		},
+		{
+			name: "Start with instruction as prefix",
+			raw:  "Start with a metaphor about tides.\n\nThe tide pulls data from the shore,\nEach wave a packet, nothing more.",
+			want: "The tide pulls data from the shore,\nEach wave a packet, nothing more.",
+		},
+		{
+			name: "blockquote markers stripped",
+			raw:  "> A knock at the gate,\n> No one answers but the wind,\n> Packets drift like leaves.",
+			want: "A knock at the gate,\nNo one answers but the wind,\nPackets drift like leaves.",
+		},
+		{
+			name: "blockquote partial lines",
+			raw:  "> The scanner arrives\nsilent as morning frost\n> and leaves no trace.",
+			want: "The scanner arrives\nsilent as morning frost\nand leaves no trace.",
+		},
+		{
+			name: "fence label fortran stripped",
+			raw:  "fortran\nPROGRAM seeker\n  PRINT *, 'knock knock'\nEND PROGRAM seeker",
+			want: "PROGRAM seeker\n  PRINT *, 'knock knock'\nEND PROGRAM seeker",
+		},
+		{
+			name: "server: header echo stripped",
+			raw:  "server: nginx/1.24\n\nA quiet knock upon the door,\nThe server hums forevermore.",
+			want: "A quiet knock upon the door,\nThe server hums forevermore.",
+		},
 		// Prompt-aware echo detection tests
 		{
 			name:   "prompt echo: format line repeated in response",

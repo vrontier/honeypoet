@@ -237,6 +237,17 @@ func cleanPoem(raw string, prompt string) string {
 	s = strings.ReplaceAll(s, "```", "")
 	s = strings.ReplaceAll(s, "`", "")
 
+	// Strip blockquote markers: "> line" → "line"
+	if strings.HasPrefix(s, "> ") || strings.Contains(s, "\n> ") {
+		lines := strings.Split(s, "\n")
+		for i, l := range lines {
+			if strings.HasPrefix(l, "> ") {
+				lines[i] = l[2:]
+			}
+		}
+		s = strings.Join(lines, "\n")
+	}
+
 	// If the model separated content with --- (multiple sections), take the
 	// last segment that contains actual poem content. Granite sometimes
 	// generates self-instructions or meta-commentary in separate sections.
@@ -389,7 +400,12 @@ func isNoiseLine(raw string) bool {
 	// Fence language labels on their own
 	switch lower {
 	case "json", "css", "html", "http", "javascript", "python", "sql",
-		"bash", "text", "xml", "yaml", "toml", "plaintext":
+		"bash", "text", "xml", "yaml", "toml", "plaintext",
+		"pascal", "fortran", "basic",
+		"java", "c++", "c#", "ruby", "swift", "go", "php", "typescript",
+		"kotlin", "rust", "r", "matlab", "perl", "dart", "shell",
+		"powershell", "scala", "haskell", "cobol", "assembly",
+		"makefile", "prolog", "ada", "lua":
 		return true
 	}
 	// JSON structural lines
@@ -482,6 +498,18 @@ var noisePrefixes = []string{
 	// Granite sometimes labels output with the persona name
 	"honeypoet:", "honeypoet writes", "the honeypoet writes",
 	"honeypoet's poem", "the honeypoet's poem",
+	// Phi instruction echoes
+	"your poem:",      // colon variant (existing "your poem " has trailing space)
+	"mention ",        // "Mention the city and country"
+	"incorporate ",    // "Incorporate the idea that..."
+	"start with",      // "Start with:" instructions
+	"end with",        // "End with:" instructions
+	"no specific",     // "No specific names, no direct references"
+	// Structured data / HTTP header echoes
+	"page size",       // structured data echo
+	"text speed",      // structured data echo
+	"last-modified",   // HTTP header echo
+	"server:",         // HTTP header echo (colon prevents matching prose "server")
 	// Self-generated constraints (Granite writes rules for itself before poems)
 	"reflect on ", "contrast ",
 	"no other ", "the word ",
