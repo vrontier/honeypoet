@@ -9,6 +9,10 @@ import (
 var codeLangs = []string{
 	"BASIC", "Pascal", "C", "COBOL", "Fortran",
 	"JavaScript", "Python", "Lua", "Shell script", "SQL",
+	"Haskell", "Rust", "Ruby", "Prolog", "Ada",
+	"Java", "C++", "C#", "Swift", "Go", "PHP", "TypeScript",
+	"Kotlin", "R", "MATLAB", "Perl", "Dart",
+	"PowerShell", "Scala",
 }
 
 // themeBank maps behavioral labels to imagery for the LLM.
