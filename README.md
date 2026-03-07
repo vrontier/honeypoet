@@ -98,6 +98,9 @@ curl -A 'Mozilla/5.0 (X11; Linux x86_64)' -X POST \
   -d 'username=admin&password=admin123' \
   'https://honeypoet.art/wp-login.php'
 
+# phpinfo — probing for server info disclosure
+curl -A 'Mozilla/5.0 zgrab/0.x' 'https://honeypoet.art/phpinfo.php'
+
 # Webshell hunting — scavenging for backdoors others planted
 curl -A 'Mozilla/5.0 zgrab/0.x' 'https://honeypoet.art/c99.php'
 
