@@ -100,8 +100,9 @@ func main() {
 	}
 	log.Printf("connected to %s", cfg.DB)
 
-	// Schema migration: ensure behavior column exists on visitors
+	// Schema migrations
 	migrateSchema(db)
+	migratePool(db)
 
 	llm := newLLMClient(cfg.LLMURL, cfg.LLMKey, cfg.LLMModel)
 	if cfg.LLMKey != "" {
@@ -216,8 +217,12 @@ func computeBehavior(db *sql.DB, visitorID int64) (behavior string, visitCount i
 	return "ghostly", cnt
 }
 
-// processVisits finds unprocessed visits and generates poems for them.
+// processVisits finds unprocessed visits, generates poems, and fills the pool when quiet.
 func processVisits(db *sql.DB, llm *llmClient, batchSize int) {
+	// Count pending for quiet detection
+	var pending int
+	db.QueryRow(`SELECT COUNT(*) FROM visits WHERE llm_generated IS NULL OR llm_generated = 0`).Scan(&pending)
+
 	rows, err := db.Query(`
 		SELECT id, path, method,
 			COALESCE(city, ''), COALESCE(country, ''),
@@ -247,6 +252,10 @@ func processVisits(db *sql.DB, llm *llmClient, batchSize int) {
 	}
 
 	if len(visits) == 0 {
+		// Nothing to process — perfect time to fill the pool
+		if isQuiet(db, 0, batchSize) {
+			fillPool(db, llm)
+		}
 		return
 	}
 
@@ -281,6 +290,20 @@ func processVisits(db *sql.DB, llm *llmClient, batchSize int) {
 			}
 		}
 
+		// Try pool for high-frequency visitors
+		if shouldUsePool(v) {
+			poem, rtype, found := drawFromPool(db, v.AttackCategory, behavior)
+			if found {
+				if _, err := db.Exec(`UPDATE visits SET response_type = ?, response_content = ?, llm_generated = 1 WHERE id = ?`,
+					rtype, poem, v.ID); err != nil {
+					log.Printf("pool draw for visit %d: %v", v.ID, err)
+					continue
+				}
+				log.Printf("visit %d (%s/%s): poem drawn from pool", v.ID, v.AttackCategory, behavior)
+				continue
+			}
+		}
+
 		prompt, respType := promptForVisit(v, behavior)
 		poem, err := llm.generate(prompt)
 		if err != nil {
@@ -304,6 +327,11 @@ func processVisits(db *sql.DB, llm *llmClient, batchSize int) {
 		}
 
 		log.Printf("visit %d (%s/%s, %s): poem generated (%d chars)", v.ID, v.AttackCategory, respType, behavior, len(poem))
+	}
+
+	// Fill pool during quiet periods (one poem per tick, never greedy)
+	if isQuiet(db, pending, batchSize) {
+		fillPool(db, llm)
 	}
 }
 
@@ -350,20 +378,32 @@ func responseTypeFor(category string) string {
 	switch category {
 	case "wordpress":
 		return "llm_haiku"
+	case "webshell":
+		return "llm_shell"
+	case "upload_exploit":
+		return "llm_upload"
 	case "env_file":
 		return "llm_env"
+	case "vcs_leak":
+		return "llm_vcs"
 	case "admin_panel":
 		return "llm_login"
 	case "path_traversal":
 		return "llm_story"
 	case "sqli_probe":
 		return "llm_sql"
+	case "cms_fingerprint":
+		return "llm_haiku"
 	case "api_probe":
 		return "llm_json"
+	case "iot_exploit":
+		return "llm_device"
 	case "dev_tools":
 		return "llm_trace"
 	case "config_probe":
 		return "llm_config"
+	case "multi_protocol":
+		return "llm_protocol"
 	case "credential_submit":
 		return "llm_mirror"
 	default:

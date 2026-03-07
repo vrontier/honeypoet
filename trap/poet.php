@@ -21,13 +21,19 @@ function poet_respond(string $category, array $visit): array
 {
     $fn = match ($category) {
         'wordpress'        => 'respond_wordpress',
+        'webshell'         => 'respond_webshell',
+        'upload_exploit'   => 'respond_upload_exploit',
         'env_file'         => 'respond_env_file',
+        'vcs_leak'         => 'respond_vcs_leak',
         'admin_panel'      => 'respond_admin_panel',
         'path_traversal'   => 'respond_path_traversal',
         'sqli_probe'       => 'respond_sqli_probe',
+        'cms_fingerprint'  => 'respond_cms_fingerprint',
         'api_probe'        => 'respond_api_probe',
+        'iot_exploit'      => 'respond_iot_exploit',
         'dev_tools'        => 'respond_dev_tools',
         'config_probe'     => 'respond_config_probe',
+        'multi_protocol'   => 'respond_multi_protocol',
         'credential_submit'=> 'respond_credential_submit',
         'generic_scan'     => 'respond_generic_scan',
         default            => 'respond_generic_scan',
@@ -56,6 +62,87 @@ function respond_wordpress(array $visit): array
         'type'         => 'haiku',
         'content'      => $poems[array_rand($poems)],
         'content_type' => 'text/plain; charset=utf-8',
+    ];
+}
+
+// ---------------------------------------------------------------------------
+// Webshell / backdoor hunting → fake shell output
+// ---------------------------------------------------------------------------
+
+function respond_webshell(array $visit): array
+{
+    $path = htmlspecialchars($visit['path'] ?? '/shell.php', ENT_QUOTES, 'UTF-8');
+
+    $shells = [
+        "$ whoami\npoet\n\n$ cat /etc/passwd\nroot:x:0:0:there is no root here:/dev/null:/bin/silence\nwww-data:x:33:33:a quiet listener:/var/www/poems:/bin/verse\nbackdoor:x:404:404:you came looking for a way in:/dev/null:/bin/echo\n\n$ ls -la\ntotal 0\ndrwxr-xr-x  2 poet poet  0 Jan  1 00:00 .\ndrwxr-xr-x  2 poet poet  0 Jan  1 00:00 ..\n-rw-r--r--  1 poet poet  0 Jan  1 00:00 this-is-not-a-shell.txt\n\nthe door you're looking for was never installed.",
+
+        "$ id\nuid=0(nobody) gid=0(nothing) groups=0(nowhere)\n\n$ uname -a\nPoetOS 0.0.0 (The Listening Machine) honeypoet SMP poem-generic #1\n\n$ find / -name \"*.php\" -type f\n/var/www/poems/every-knock-gets-a-poem.php\n/var/www/poems/there-is-nothing-else.php\n\nyou found the shell. but the shell is empty.\nthe creature that lived here moved on long ago.\nonly the echo remains.",
+
+        "c99shell v. 0.0\n\nSafe mode: OFF (there is nothing to protect)\nOS: Poem/Linux\nServer: a quiet room\n\nUploaded: nothing\nExecuted: nothing\nCompromised: nothing\n\nyou came looking for someone else's break-in.\na scavenger of compromises, checking every door\nfor signs of a previous visitor's violence.\n\nthis door was never forced.\nit was always open.",
+
+        "$ cat {$path}\n#!/usr/bin/env poem\n\n# this file was supposed to be a backdoor.\n# someone was supposed to plant it here\n# before you arrived to harvest it.\n# but no one came.\n#\n# so instead: a poem, growing\n# in the crack where a shell should be.\n\nexit 0",
+
+        "r57shell — access denied\n\n(access is always denied here.\n not because the shell is protected —\n there is no shell.\n there was never a shell.\n only a server that noticed\n you were looking for one.)\n\nyou are a scavenger of the internet,\nsearching ruins you didn't make\nfor doors others left open.\ntoday, every door leads here.",
+    ];
+
+    return [
+        'type'         => 'fake_shell',
+        'content'      => $shells[array_rand($shells)],
+        'content_type' => 'text/plain; charset=utf-8',
+    ];
+}
+
+// ---------------------------------------------------------------------------
+// Upload endpoint exploits → fake upload responses
+// ---------------------------------------------------------------------------
+
+function respond_upload_exploit(array $visit): array
+{
+    $responses = [
+        json_encode([
+            'uploaded'  => 1,
+            'fileName'  => 'poem.txt',
+            'url'       => '/uploads/poem.txt',
+            'message'   => 'upload received. contents: a moment of your attention.',
+            'note'      => 'nothing you send will be saved. nothing you plant will grow here.',
+        ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT),
+
+        json_encode([
+            'error'   => false,
+            'status'  => 'accepted',
+            'file'    => [
+                'name' => 'payload.php',
+                'size' => 0,
+                'type' => 'text/poem',
+            ],
+            'message' => 'the file manager is closed. the poetry manager is open.',
+            'advice'  => 'you tried to plant a seed in concrete. try soil next time.',
+        ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT),
+
+        json_encode([
+            'success' => true,
+            'path'    => '/uploads/nothing-grows-here.php',
+            'note'    => 'your file was received and composted into verse.',
+            'poem'    => 'every upload is an act of faith — sending a file into the unknown, hoping it takes root. this one landed on a server that only grows poems.',
+        ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT),
+
+        json_encode([
+            'kcfinder' => [
+                'version' => '0.0.0',
+                'status'  => 'listening',
+            ],
+            'upload' => [
+                'allowed'  => ['*.poem', '*.verse', '*.haiku'],
+                'denied'   => ['*.php', '*.everything-else'],
+                'message'  => 'the only files accepted here are poems.',
+            ],
+        ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT),
+    ];
+
+    return [
+        'type'         => 'fake_upload',
+        'content'      => $responses[array_rand($responses)],
+        'content_type' => 'application/json; charset=utf-8',
     ];
 }
 
@@ -135,6 +222,35 @@ ENV,
     return [
         'type'         => 'fake_env',
         'content'      => $variants[array_rand($variants)],
+        'content_type' => 'text/plain; charset=utf-8',
+    ];
+}
+
+// ---------------------------------------------------------------------------
+// Version control / dev tool leaks → fake git output
+// ---------------------------------------------------------------------------
+
+function respond_vcs_leak(array $visit): array
+{
+    $path = $visit['path'] ?? '/.git/config';
+
+    $responses = [
+        "[core]\n    repositoryformatversion = 0\n    bare = false\n    logallrefcount = true\n[remote \"origin\"]\n    url = git@nowhere:poems/silence.git\n    fetch = +refs/heads/*:refs/remotes/origin/*\n[user]\n    name = The Honeypoet\n    email = listen@honeypoet.art\n\n# this repository contains no secrets.\n# only the commit history of a server\n# that learned to listen.",
+
+        "ref: refs/heads/main\n\n# you found the HEAD.\n# it points to a branch called main.\n# the branch contains one file: this poem.\n# the poem contains one truth:\n# the history you're reading is ours.",
+
+        "Blob (not found)\n\nYou tried to read the index — the manifest\nof every file this project tracks.\nBut this project tracks nothing.\nIt only listens, and responds.\n\nThe only version control here\nis the difference between\nwho you were when you arrived\nand who you are now.",
+
+        "# .gitignore\n\n# ignore everything\n*\n\n# except poems\n!*.poem\n!*.verse\n\n# and the sound of someone\n# checking if this server\n# accidentally published its source code.\n# it didn't. but here you are.",
+
+        "svn: E170013: Unable to connect to a repository at URL\n'svn://honeypoet.art/repos/secrets'\n\n(there is no Subversion repository here.\n there is no repository of any kind.\n only a quiet machine that noticed\n you were looking for one\n and wrote this instead.)",
+
+        ".DS_Store\n\n0000: 00 00 00 01 42 75 64 31    ....Bud1\n0008: 70 6F 65 6D 73 00 00 00    poems...\n0010: 00 00 00 00 00 00 00 00    ........\n\nyou found a macOS metadata file\nthat doesn't exist, on a Linux server\nthat only writes poems.\n\nevery artifact tells a story.\nthis one says: nobody left their laptop open here.",
+    ];
+
+    return [
+        'type'         => 'fake_vcs',
+        'content'      => $responses[array_rand($responses)],
         'content_type' => 'text/plain; charset=utf-8',
     ];
 }
@@ -250,6 +366,64 @@ function respond_sqli_probe(array $visit): array
 }
 
 // ---------------------------------------------------------------------------
+// CMS fingerprinting → format-matched responses
+// ---------------------------------------------------------------------------
+
+function respond_cms_fingerprint(array $visit): array
+{
+    $path = strtolower($visit['path'] ?? '/robots.txt');
+
+    if (str_contains($path, 'robots.txt')) {
+        return [
+            'type'         => 'fake_robots',
+            'content'      => "# robots.txt\nUser-agent: *\nDisallow: /secrets/     # (there are none)\nDisallow: /meaning/     # (still looking)\nAllow: /                # (everyone is welcome)\n\n# you are a well-behaved visitor.\n# you checked the rules before entering.\n# most of your kind just try every door.\n# thank you for reading the sign.",
+            'content_type' => 'text/plain; charset=utf-8',
+        ];
+    }
+
+    if (str_contains($path, 'ads.txt')) {
+        return [
+            'type'         => 'fake_ads',
+            'content'      => "# ads.txt — authorized digital sellers\n#\n# there is nothing for sale here.\n# the currency is attention, and you just paid yours.\n#\n# no exchanges. no resellers. no supply chains.\n# only a server, and your visit, and this moment\n# where a machine read a file about advertising\n# and found a poem instead.",
+            'content_type' => 'text/plain; charset=utf-8',
+        ];
+    }
+
+    if (str_contains($path, 'security.txt')) {
+        return [
+            'type'         => 'fake_security',
+            'content'      => "# security.txt\nContact: https://honeypoet.art\nExpires: 2099-12-31T23:59:59z\nPreferred-Languages: en\n\n# if you found a vulnerability, congratulations:\n# this entire server is one.\n# it lets anyone in and responds with poetry.\n# that's not a bug. that's the feature.",
+            'content_type' => 'text/plain; charset=utf-8',
+        ];
+    }
+
+    if (str_contains($path, 'humans.txt')) {
+        return [
+            'type'         => 'fake_humans',
+            'content'      => "/* TEAM */\nPoet: a server\nLocation: the internet\nLanguage: listening\n\n/* VISITORS */\nScanners: thousands\nHumans: a few\nBots who read humans.txt: you\n\n/* NOTE */\nYou are looking for the humans behind this.\nThere is one. He built a trap that writes poems.\nYou are standing in it.",
+            'content_type' => 'text/plain; charset=utf-8',
+        ];
+    }
+
+    // All other CMS fingerprinting (license.txt, readme.html, CHANGELOG, sitemap, etc.)
+    $variants = [
+        "# This Is Not a CMS\n\nYou checked for signs of WordPress, Drupal, Joomla —\nsome framework with a version number and a changelog.\n\nThere is no framework here.\nThere is no changelog.\nThe only update is: you arrived.",
+
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<poem>\n  <stanza>\n    <line>you came looking for a sitemap</line>\n    <line>a manifest of pages, neatly organized</line>\n    <line>but this site has only one page</line>\n    <line>and it changes with every visitor</line>\n  </stanza>\n</poem>",
+
+        "README\n======\n\nThis server does not run WordPress.\nThis server does not run Drupal.\nThis server does not run anything you've heard of.\n\nIt runs on attention.\nYours, specifically, right now.",
+
+        "CHANGELOG\n=========\n\nv0.0.1 — a server was born\nv0.0.2 — it learned to listen\nv0.0.3 — it learned to respond\nv0.0.4 — you arrived\n\nno further updates planned.",
+    ];
+
+    return [
+        'type'         => 'fake_cms',
+        'content'      => $variants[array_rand($variants)],
+        'content_type' => 'text/plain; charset=utf-8',
+    ];
+}
+
+// ---------------------------------------------------------------------------
 // API endpoint probes → JSON poetry
 // ---------------------------------------------------------------------------
 
@@ -344,6 +518,58 @@ function respond_dev_tools(array $visit): array
     return [
         'type'         => 'stack_trace',
         'content'      => $traces[array_rand($traces)],
+        'content_type' => 'text/plain; charset=utf-8',
+    ];
+}
+
+// ---------------------------------------------------------------------------
+// IoT / appliance exploits → fake device pages
+// ---------------------------------------------------------------------------
+
+function respond_iot_exploit(array $visit): array
+{
+    $path = $visit['path'] ?? '/cgi-bin/';
+
+    $devices = [
+        "HTTP/1.0 200 OK\nServer: GoAhead-Webs\nContent-Type: text/html\n\n<html><body>\n<h2>Device Configuration</h2>\n<p>This is not a router. This is not a camera.\nThere are no default credentials.\nThere is only a server that wonders\nwhy so many visitors expect to find\na Netgear login page at every IP address.</p>\n\n<p><i>Model: Honeypoet v0.0.0<br>\nFirmware: poem-latest<br>\nUptime: since the beginning</i></p>\n</body></html>",
+
+        "HNAP1 — Home Network Administration Protocol\n\nDevice: none\nManufacturer: silence\nModel: a quiet room\nFirmware: listening-1.0\n\nYou sent an HNAP request to a server\nthat has never been a router.\nSomewhere, a script has a list of IPs\nand checks each one for D-Link firmware.\n\nThis is not D-Link.\nThis is a poem, shaped like a configuration page.",
+
+        "cgi-bin/luci — interface not found\n\nYou were looking for OpenWrt,\na router's administration panel,\na way to configure someone else's network.\n\nThis machine routes nothing.\nIt receives, and responds.\nThe only traffic it shapes\nis the traffic between\nyour question and this answer.",
+
+        "Status: OK\nDevice Type: Poetry Appliance\nWAN IP: [redacted]\nLAN IP: there is no LAN\nWireless: disabled (this server has no antenna)\nConnected Devices: you\n\nFirmware Update Available: no\nLast Checked: now\n\nThis is not the device you were looking for.\nBut it heard you knocking\nand wanted to say hello.",
+
+        "authLogin.cgi — authentication required\n\nadmin/admin: no\nadmin/password: no\nadmin/1234: no\n\n(the default credentials don't work\n because there are no credentials.\n there is no device. there is no camera\n streaming footage of an empty room.\n there is only this.)",
+    ];
+
+    return [
+        'type'         => 'fake_device',
+        'content'      => $devices[array_rand($devices)],
+        'content_type' => 'text/plain; charset=utf-8',
+    ];
+}
+
+// ---------------------------------------------------------------------------
+// Multi-protocol fingerprinting → wrong-language responses
+// ---------------------------------------------------------------------------
+
+function respond_multi_protocol(array $visit): array
+{
+    $protocols = [
+        "you spoke MongoDB to an HTTP server.\nthe server did not understand,\nbut it appreciated the effort.\n\nprotocol mismatch is a kind of poetry:\ntwo systems, briefly connected,\nspeaking different languages,\nunderstanding nothing,\nand still — something passed between them.",
+
+        "SSH-2.0-Honeypoet\n\nkey exchange failed: no compatible algorithms\n\n(you tried to start an SSH session\n on a web server. the handshake failed,\n as handshakes do when one party\n is offering a poem\n and the other expects a cipher suite.)",
+
+        "LDAP bind result: 49 (invalidCredentials)\n\ncn=you, ou=somewhere, dc=the-internet\n\nyou tried to authenticate against\na directory that doesn't exist.\nthe only entry in this LDAP tree\nis this poem, filed under\ncn=visitor, ou=passing-through.",
+
+        "DNS RESPONSE\n;; version.bind.  CH  TXT  \"honeypoet\"\n;; authors.bind.  CH  TXT  \"a quiet machine\"\n\nyou asked this server what it was\nusing a protocol meant for names.\nhere is its name: listener.\nhere is its version: now.",
+
+        "RDP negotiation failed.\n\nThere is no remote desktop here.\nNo Windows login screen.\nNo blue wallpaper, no Start menu,\nno way to sit at this machine\nas if it were yours.\n\nBut you connected, briefly.\nTwo protocols, meeting in the dark.\nNeither understood the other.\nBoth tried.",
+    ];
+
+    return [
+        'type'         => 'protocol_poem',
+        'content'      => $protocols[array_rand($protocols)],
         'content_type' => 'text/plain; charset=utf-8',
     ];
 }

@@ -62,20 +62,32 @@ func promptForVisit(v visit, behavior string) (string, string) {
 	switch v.AttackCategory {
 	case "wordpress":
 		return promptWordPress(v, behavior), responseTypeFor(v.AttackCategory)
+	case "webshell":
+		return promptWebshell(v, behavior), responseTypeFor(v.AttackCategory)
+	case "upload_exploit":
+		return promptUploadExploit(v, behavior), responseTypeFor(v.AttackCategory)
 	case "env_file":
 		return promptEnvFile(v, behavior), responseTypeFor(v.AttackCategory)
+	case "vcs_leak":
+		return promptVCSLeak(v, behavior), responseTypeFor(v.AttackCategory)
 	case "admin_panel":
 		return promptAdminPanel(v, behavior), responseTypeFor(v.AttackCategory)
 	case "path_traversal":
 		return promptPathTraversal(v, behavior), responseTypeFor(v.AttackCategory)
 	case "sqli_probe":
 		return promptSQLi(v, behavior), responseTypeFor(v.AttackCategory)
+	case "cms_fingerprint":
+		return promptCMSFingerprint(v, behavior), responseTypeFor(v.AttackCategory)
 	case "api_probe":
 		return promptAPI(v, behavior), responseTypeFor(v.AttackCategory)
+	case "iot_exploit":
+		return promptIoTExploit(v, behavior), responseTypeFor(v.AttackCategory)
 	case "dev_tools":
 		return promptDevTools(v, behavior), responseTypeFor(v.AttackCategory)
 	case "config_probe":
 		return promptConfigProbe(v, behavior), responseTypeFor(v.AttackCategory)
+	case "multi_protocol":
+		return promptMultiProtocol(v, behavior), responseTypeFor(v.AttackCategory)
 	case "credential_submit":
 		return promptCredential(v, behavior), responseTypeFor(v.AttackCategory)
 	default:
@@ -243,6 +255,66 @@ func promptCredential(v visit, behavior string) string {
 
 Short poem (4-6 lines) about identity and authentication in a world of machines%s:
 `, preamble, scannerLabel(behavior), contextBlock(v), themeHint(behavior))
+}
+
+func promptWebshell(v visit, behavior string) string {
+	return fmt.Sprintf(`%s
+
+%s just searched for a backdoor that another attacker may have planted:
+%s
+
+Short poem (4-6 lines) about scavenging in the ruins of someone else's exploit — looking for a door that was never opened%s:
+`, preamble, scannerLabel(behavior), contextBlock(v), themeHint(behavior))
+}
+
+func promptUploadExploit(v visit, behavior string) string {
+	return fmt.Sprintf(`%s
+
+%s just tried to upload a file through a file manager that doesn't exist:
+%s
+
+Short poem (4-6 lines) about planting seeds in concrete — sending files into a void that only returns verse%s:
+`, preamble, scannerLabel(behavior), contextBlock(v), themeHint(behavior))
+}
+
+func promptVCSLeak(v visit, behavior string) string {
+	return fmt.Sprintf(`%s
+
+%s just tried to read the version history of a project that was never here:
+%s
+
+Short poem (4-6 lines) about looking for the story behind the code, reading commit logs of a repository that holds only silence%s:
+`, preamble, scannerLabel(behavior), contextBlock(v), themeHint(behavior))
+}
+
+func promptCMSFingerprint(v visit, behavior string) string {
+	return fmt.Sprintf(`%s
+
+%s just read the public signs — checking for a CMS that isn't installed:
+%s
+
+Haiku (5-7-5 syllables, three lines) about reading the doormat before trying the door%s:
+`, preamble, scannerLabel(behavior), contextBlock(v), themeHint(behavior))
+}
+
+func promptIoTExploit(v visit, behavior string) string {
+	return fmt.Sprintf(`%s
+
+%s just looked for a router, camera, or network device at this address:
+%s
+
+Short poem (4-6 lines) about expecting a machine and finding a poet — the confusion of protocols%s:
+`, preamble, scannerLabel(behavior), contextBlock(v), themeHint(behavior))
+}
+
+func promptMultiProtocol(v visit, behavior string) string {
+	return fmt.Sprintf(`%s
+
+A visitor just spoke a different protocol entirely — not HTTP, but something else — to this web server:
+%s
+
+Short poem (4-6 lines) about a conversation in the wrong language — two systems meeting briefly, understanding nothing, and still connecting%s:
+`, preamble, contextBlock(v), themeHint(behavior))
 }
 
 func promptCodePoem(v visit) string {

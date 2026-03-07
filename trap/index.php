@@ -291,13 +291,34 @@ function categorize_attack(string $path, string $method, ?string $body, string $
     $query_lower = strtolower($query_string);
 
     // WordPress probes
-    if (preg_match('#/(wp-login|wp-admin|wp-content|wp-includes|wp-config|xmlrpc|wp-cron)#i', $path_lower)) {
+    if (preg_match('#/(wp-login|wp-admin|wp-content|wp-includes|wp-config|xmlrpc|wp-cron|wp-json)#i', $path_lower)) {
         return 'wordpress';
     }
 
-    // Environment file hunters
-    if (preg_match('#/\.env|/\.git|/\.aws|/\.docker|/\.ssh|/\.bash|/\.htaccess|/\.htpasswd#i', $path_lower)) {
+    // Upload endpoint exploits (KCFinder, elFinder, file managers — before webshell)
+    if (preg_match('#/(kcfinder|elfinder|filemanager|ckeditor/.*/upload|plupload|uploadify)/#i', $path_lower)) {
+        return 'upload_exploit';
+    }
+
+    // Webshell / backdoor hunting (before admin_panel — some paths contain "admin")
+    if (preg_match('#/(shell|cmd|c99|r57|webshell|backdoor|up|upload|fileupload|xmr|rip|inputs|adminfuns|ioxi)\.php#i', $path_lower)) {
+        return 'webshell';
+    }
+    if (preg_match('#/\.trash\d*/|/\.well-known/logs\d*/|/wk/index\.php|/function/function\.php#i', $path_lower)) {
+        return 'webshell';
+    }
+    if (preg_match('#/wp-content/(uploads|themes|plugins)/[^/]+\.(php|phtml)$#i', $path_lower)) {
+        return 'webshell';
+    }
+
+    // Environment file hunters (secrets, credentials)
+    if (preg_match('#/\.env(\.|$)|/\.aws|/\.docker|/\.ssh|/\.bash|/\.htaccess|/\.htpasswd#i', $path_lower)) {
         return 'env_file';
+    }
+
+    // Version control / dev tool leaks (split from env_file)
+    if (preg_match('#/\.git(/|$)|/\.svn(/|$)|/\.hg(/|$)|/\.DS_Store|/\.vscode(/|$)|/\.idea(/|$)|/\.aider#i', $path_lower)) {
+        return 'vcs_leak';
     }
 
     // Admin panel fishers
@@ -318,13 +339,32 @@ function categorize_attack(string $path, string $method, ?string $body, string $
         return 'sqli_probe';
     }
 
-    // API endpoint probes
-    if (preg_match('#^/(api|graphql|rest|v[0-9]+|swagger|openapi)(/|$|\.)#i', $path_lower)) {
+    // CMS fingerprinting (reading the doormat before trying the door)
+    if (preg_match('#^/(robots\.txt|humans\.txt|ads\.txt|security\.txt|license\.txt|readme\.html|CHANGELOG\.txt|INSTALL\.txt|UPDATE\.txt|sitemap\.xml|crossdomain\.xml|web\.config)$#i', $path_lower)) {
+        return 'cms_fingerprint';
+    }
+    if (preg_match('#^/\.well-known/security\.txt$#i', $path_lower)) {
+        return 'cms_fingerprint';
+    }
+
+    // API endpoint probes (widened: actuator, metrics, openid)
+    if (preg_match('#^/(api|graphql|rest|v[0-9]+|swagger|openapi|actuator|metrics|sdk|api-docs)(/|$|\.)#i', $path_lower)) {
+        return 'api_probe';
+    }
+    if (preg_match('#/\.well-known/openid-configuration$#i', $path_lower)) {
         return 'api_probe';
     }
 
-    // Dev tools (xdebug, profiler, debug endpoints)
-    if (preg_match('#/(\.xdebug|debug|trace|profiler|server-status|server-info|phpinfo|test\.php|info\.php)#i', $path_lower)) {
+    // IoT / appliance exploits (routers, cameras, network devices)
+    if (preg_match('#/(cgi-bin|HNAP1|goform|stssys\.htm|currentsetting\.htm)(/|$)#i', $path_lower)) {
+        return 'iot_exploit';
+    }
+    if (preg_match('#/update/picture\.cgi|/cgi-bin/(luci|authLogin\.cgi)#i', $path_lower)) {
+        return 'iot_exploit';
+    }
+
+    // Dev tools (widened: pi.php, p.php, php.php, pinfo.php, _profiler)
+    if (preg_match('#/(\.xdebug|debug|trace|profiler|_profiler|server-status|server-info|phpinfo|phpversion|test\.php|info\.php|pi\.php|p\.php|php\.php|pinfo\.php|i\.php)(/|$)#i', $path_lower)) {
         return 'dev_tools';
     }
     if (str_contains($query_lower, 'xdebug') || str_contains($query_lower, 'phpstorm')) {
@@ -337,6 +377,17 @@ function categorize_attack(string $path, string $method, ?string $body, string $
     }
     if (preg_match('#/(composer\.(json|lock)|package\.json|Gemfile|requirements\.txt|Dockerfile|docker-compose)#i', $path_lower)) {
         return 'config_probe';
+    }
+
+    // Multi-protocol fingerprinting (non-HTTP protocols over HTTP port)
+    if ($body !== null && (
+        str_contains($body, 'SSH-2.0') ||
+        str_contains($body, "\x07version\x04bind") ||
+        str_contains($body, 'admin.$cmd') ||
+        str_contains($body, "\x03\x00\x00\x13\x0E\xE0") ||
+        preg_match('/^[\x00-\x1f\x80-\xff]{4,}/', $body)
+    )) {
+        return 'multi_protocol';
     }
 
     // Credential submissions (POST to login-like paths)
