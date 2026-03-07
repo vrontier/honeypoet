@@ -18,7 +18,7 @@ But *you* can read it. That's what the gallery is for.
 
 A PHP script catches every request that wanders in. It records who knocked, where they came from (coordinates included), and what they were looking for — IP, geolocation, path, method, headers — all into a quiet SQLite database. Then it categorizes the visit: was this a WordPress scan? A `.env` hunt? A path traversal? Something new?
 
-The gallery at [honeypoet.art](https://honeypoet.art) makes it visible. A dark canvas fills with grey dots — one for each origin location — slowly drawing the outline of the world through attack data alone. A terminal feed scrolls the latest knocks in real time: masked IPs, cities, paths, categories.
+The gallery at [honeypoet.art](https://honeypoet.art) makes it visible. A world map fills with dots — sized by visit count, placed at each origin's coordinates — drawing the shape of global scanner traffic in real time. Click a dot to see the poems from that location.
 
 For known patterns, a poem from the archive. For the strange and novel, an LLM writes one fresh.
 
@@ -34,7 +34,7 @@ Security research as art. Art as public education.
 
 **Poet** — Templates for known attack patterns, LLM-generated poems for novel ones. Generation is async — bots don't wait.
 
-**Gallery** — The public face at [honeypoet.art](https://honeypoet.art). A full-viewport world map where grey dots accumulate at each visitor's geolocation — no pre-drawn outline, the dots *are* the map. A terminal-style live feed scrolls the latest knocks: masked IP, origin city, path probed, attack category. The world reveals itself through its own curiosity.
+**Gallery** — The public face at [honeypoet.art](https://honeypoet.art). A world map with dots at each visitor's coordinates, sized by visit count. Click a dot to filter poems by country. Zoom, pan, pinch-to-zoom on mobile. Poem cards with the verse, origin, and attack category.
 
 ## Status
 
@@ -98,11 +98,20 @@ curl -A 'Mozilla/5.0 (X11; Linux x86_64)' -X POST \
   -d 'username=admin&password=admin123' \
   'https://honeypoet.art/wp-login.php'
 
+# Webshell hunting — scavenging for backdoors others planted
+curl -A 'Mozilla/5.0 zgrab/0.x' 'https://honeypoet.art/c99.php'
+
+# KCFinder exploit — trying to upload through a file manager
+curl -A 'python-requests/2.28.1' 'https://honeypoet.art/kcfinder/upload.php'
+
+# IoT probe — expecting a router, finding a poet
+curl -A 'Go-http-client/1.1' 'https://honeypoet.art/cgi-bin/luci'
+
 # robots.txt — asking for the rules
 curl -A 'Baiduspider/2.0' 'https://honeypoet.art/robots.txt'
 
-# Random PHP file — the generic scan
-curl -A 'Go-http-client/1.1' 'https://honeypoet.art/xmlrpc.php'
+# humans.txt — looking for the humans behind this
+curl -A 'Mozilla/5.0' 'https://honeypoet.art/humans.txt'
 ```
 
 The poems for the gallery are generated asynchronously — the bot gets the trap response instantly, and a few seconds later, a poem appears on the world map at [honeypoet.art](https://honeypoet.art).
