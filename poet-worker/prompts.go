@@ -59,40 +59,56 @@ func promptForVisit(v visit, behavior string) (string, string) {
 		return promptCodePoem(v), "llm_code"
 	}
 
+	// 1-in-5 chance: weave a trending topic into the poem
+	zeitgeist := ""
+	if shouldDoZeitgeist() {
+		zeitgeist = zeitgeistHint(v.Country)
+	}
+
+	var prompt string
+	rtype := responseTypeFor(v.AttackCategory)
+
 	switch v.AttackCategory {
 	case "wordpress":
-		return promptWordPress(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptWordPress(v, behavior)
 	case "webshell":
-		return promptWebshell(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptWebshell(v, behavior)
 	case "upload_exploit":
-		return promptUploadExploit(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptUploadExploit(v, behavior)
 	case "env_file":
-		return promptEnvFile(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptEnvFile(v, behavior)
 	case "vcs_leak":
-		return promptVCSLeak(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptVCSLeak(v, behavior)
 	case "admin_panel":
-		return promptAdminPanel(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptAdminPanel(v, behavior)
 	case "path_traversal":
-		return promptPathTraversal(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptPathTraversal(v, behavior)
 	case "sqli_probe":
-		return promptSQLi(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptSQLi(v, behavior)
 	case "cms_fingerprint":
-		return promptCMSFingerprint(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptCMSFingerprint(v, behavior)
 	case "api_probe":
-		return promptAPI(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptAPI(v, behavior)
 	case "iot_exploit":
-		return promptIoTExploit(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptIoTExploit(v, behavior)
 	case "dev_tools":
-		return promptDevTools(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptDevTools(v, behavior)
 	case "config_probe":
-		return promptConfigProbe(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptConfigProbe(v, behavior)
 	case "multi_protocol":
-		return promptMultiProtocol(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptMultiProtocol(v, behavior)
 	case "credential_submit":
-		return promptCredential(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptCredential(v, behavior)
 	default:
-		return promptGenericScan(v, behavior), responseTypeFor(v.AttackCategory)
+		prompt = promptGenericScan(v, behavior)
 	}
+
+	// Append zeitgeist flavor if rolled
+	if zeitgeist != "" {
+		prompt += zeitgeist
+	}
+
+	return prompt, rtype
 }
 
 func locationLine(v visit) string {

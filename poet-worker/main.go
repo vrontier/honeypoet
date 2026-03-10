@@ -103,6 +103,11 @@ func main() {
 	// Schema migrations
 	migrateSchema(db)
 	migratePool(db)
+	migrateTrends(db)
+
+	// Load cached trends from DB, then do an initial refresh
+	loadTrendsFromDB(db)
+	go refreshTrends(db)
 
 	llm := newLLMClient(cfg.LLMURL, cfg.LLMKey, cfg.LLMModel)
 	if cfg.LLMKey != "" {
@@ -124,6 +129,7 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
+			refreshTrends(db) // no-op if fetched within the hour
 			processVisits(db, llm, cfg.Batch)
 		case sig := <-stop:
 			log.Printf("received %v, shutting down", sig)

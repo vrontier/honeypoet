@@ -203,6 +203,152 @@ if ($clean_path === '/_api/poems' && $method === 'GET') {
     exit;
 }
 
+// API endpoint: museum stats — top visitors, weekly exhibits, zeitgeist
+if ($clean_path === '/_api/museum' && $method === 'GET') {
+    try {
+        $db = new PDO('sqlite:' . $DB_PATH, null, null, [
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
+        $db->exec('PRAGMA journal_mode=WAL');
+        $db->exec('PRAGMA busy_timeout=3000');
+
+        // Top 10 countries by unique visitors
+        $countries = $db->query('
+            SELECT v.country, COUNT(DISTINCT v.visitor_id) as count
+            FROM visits v
+            WHERE v.country IS NOT NULL AND v.country != ""
+              AND v.visitor_id IS NOT NULL
+            GROUP BY v.country ORDER BY count DESC LIMIT 10
+        ')->fetchAll();
+
+        // Top 15 cities by unique visitors
+        $cities = $db->query('
+            SELECT v.city, v.country, COUNT(DISTINCT v.visitor_id) as count
+            FROM visits v
+            WHERE v.city IS NOT NULL AND v.city != ""
+              AND v.visitor_id IS NOT NULL
+            GROUP BY v.city, v.country ORDER BY count DESC LIMIT 15
+        ')->fetchAll();
+
+        // Weekly exhibits — best poems from last 4 weeks
+        // "Best" = moderate length (80-400 chars), no repetition loops, random selection
+        $exhibits = [];
+        for ($w = 0; $w < 4; $w++) {
+            $weekStart = date('Y-m-d', strtotime("monday this week -" . ($w * 7) . " days"));
+            $weekEnd   = date('Y-m-d', strtotime("monday this week -" . (($w - 1) * 7) . " days"));
+            $weekLabel = date('Y-\\WW', strtotime($weekStart));
+
+            $stmt = $db->prepare('
+                SELECT v.timestamp, v.country, v.city, v.attack_category,
+                       v.response_content, v.response_type,
+                       vis.name AS visitor_name, vis.behavior AS visitor_behavior
+                FROM visits v
+                LEFT JOIN visitors vis ON v.visitor_id = vis.id
+                WHERE v.llm_generated = 1
+                  AND v.response_content IS NOT NULL
+                  AND LENGTH(v.response_content) BETWEEN 80 AND 400
+                  AND v.response_content NOT LIKE "%write a %"
+                  AND v.response_content NOT LIKE "%your poem%"
+                  AND v.response_content NOT LIKE "%your task%"
+                  AND v.timestamp >= :start
+                  AND v.timestamp < :end
+                  AND v.id IN (
+                      SELECT MAX(id) FROM visits
+                      WHERE llm_generated = 1
+                      GROUP BY response_content
+                  )
+                ORDER BY RANDOM()
+                LIMIT 5
+            ');
+            $stmt->execute([':start' => $weekStart, ':end' => $weekEnd]);
+            $weekPoems = $stmt->fetchAll();
+            if ($weekPoems) {
+                $exhibits[$weekLabel] = $weekPoems;
+            }
+        }
+
+        // Summary stats
+        $total_visitors = 0;
+        try {
+            $total_visitors = (int) $db->query('SELECT COUNT(*) FROM visitors')->fetchColumn();
+        } catch (\PDOException $e) {}
+        $total_visits = (int) $db->query('SELECT COUNT(*) FROM visits')->fetchColumn();
+        $total_poems  = (int) $db->query('SELECT COUNT(*) FROM visits WHERE llm_generated = 1')->fetchColumn();
+        $since        = $db->query('SELECT MIN(timestamp) FROM visits')->fetchColumn();
+
+        // Behaviors — count of visitors per behavior type
+        $behaviors = [];
+        try {
+            $behaviors = $db->query('
+                SELECT behavior, COUNT(*) as count
+                FROM visitors
+                WHERE behavior IS NOT NULL AND behavior != ""
+                GROUP BY behavior ORDER BY count DESC
+            ')->fetchAll();
+        } catch (\PDOException $e) {}
+
+        // Top categories by country — for top 5 countries, their top 3 attack categories
+        $top_categories_by_country = [];
+        $top5 = array_slice($countries, 0, 5);
+        foreach ($top5 as $c) {
+            $stmt = $db->prepare('
+                SELECT v.attack_category as category, COUNT(DISTINCT v.visitor_id) as count
+                FROM visits v
+                WHERE v.country = :country
+                  AND v.attack_category IS NOT NULL AND v.attack_category != ""
+                  AND v.attack_category != "visitor"
+                  AND v.visitor_id IS NOT NULL
+                GROUP BY v.attack_category ORDER BY count DESC LIMIT 3
+            ');
+            $stmt->execute([':country' => $c['country']]);
+            $top_categories_by_country[$c['country']] = $stmt->fetchAll();
+        }
+
+        // Hourly activity — visits per hour of day (0-23 UTC)
+        $hourly_activity = $db->query('
+            SELECT CAST(strftime("%H", timestamp) AS INTEGER) as hour, COUNT(*) as count
+            FROM visits
+            GROUP BY hour ORDER BY hour
+        ')->fetchAll();
+
+        // Avg visits per visitor by country — top 10 countries
+        $avg_visits_by_country = $db->query('
+            SELECT v.country,
+                   ROUND(CAST(COUNT(*) AS REAL) / COUNT(DISTINCT v.visitor_id), 1) as avg_visits,
+                   COUNT(DISTINCT v.visitor_id) as visitors
+            FROM visits v
+            WHERE v.country IS NOT NULL AND v.country != ""
+              AND v.visitor_id IS NOT NULL
+            GROUP BY v.country
+            HAVING visitors >= 3
+            ORDER BY visitors DESC LIMIT 10
+        ')->fetchAll();
+
+        header('Content-Type: application/json');
+        header('Cache-Control: public, max-age=300');
+        header('Access-Control-Allow-Origin: *');
+        echo json_encode([
+            'countries'    => $countries,
+            'cities'       => $cities,
+            'exhibits'     => $exhibits,
+            'total_visitors' => $total_visitors,
+            'total_visits'   => $total_visits,
+            'total_poems'    => $total_poems,
+            'since'        => $since,
+            'behaviors'    => $behaviors,
+            'top_categories_by_country' => $top_categories_by_country,
+            'hourly_activity' => $hourly_activity,
+            'avg_visits_by_country' => $avg_visits_by_country,
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    } catch (\PDOException $e) {
+        error_log("honeypoet: museum API error: " . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'internal']);
+    }
+    exit;
+}
+
 // ---------------------------------------------------------------------------
 // Everything else is traffic — capture it (including gallery visitors)
 // ---------------------------------------------------------------------------
@@ -596,6 +742,9 @@ require_once __DIR__ . '/poet.php';
 if ($clean_path === '/' && $method === 'GET') {
     // Gallery page for human visitors
     serve_gallery();
+} elseif ($clean_path === '/museum' && $method === 'GET') {
+    // Museum stats page for human visitors
+    serve_museum();
 } else {
     // Generate creative response from template banks
     $response = poet_respond($attack_category, [
@@ -796,7 +945,7 @@ function serve_gallery(): void
         <div id="footer">
             <div id="counter"></div>
             <div id="utc-note">Universal Time (UTC)</div>
-            <div id="credits">&copy; 2026 M. Quest &middot; <a href="https://github.com/vrontier/honeypoet">https://github.com/vrontier/honeypoet</a></div>
+            <div id="credits"><a href="/museum">The Museum</a> &middot; &copy; 2026 M. Quest &middot; <a href="https://github.com/vrontier/honeypoet">https://github.com/vrontier/honeypoet</a></div>
         </div>
     </div>
     <script>
@@ -1452,6 +1601,534 @@ function serve_gallery(): void
         });
         setInterval(poll, 30000);
         setInterval(pollFeed, 10000);
+    })();
+    </script>
+</body>
+</html>
+HTML;
+}
+
+// ===========================================================================
+// Museum page — "Our Visitors, Our Exhibits"
+// ===========================================================================
+
+function serve_museum(): void
+{
+    http_response_code(200);
+    header('Content-Type: text/html; charset=utf-8');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-cache');
+
+    echo <<<'HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>honeypoet — the museum</title>
+    <meta name="description" content="The Honeypo(e)t Museum. Top visitors, weekly exhibitions, and the zeitgeist woven into verse.">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { background: #fff1e5; color: #222; }
+        .museum {
+            max-width: 680px; margin: 0 auto; padding: 48px 24px 60px;
+            font-family: Georgia, serif; line-height: 1.6;
+        }
+        h1 {
+            font-size: 26px; font-weight: normal; letter-spacing: 0.04em;
+            text-align: center; margin-bottom: 4px;
+        }
+        .subtitle {
+            text-align: center; font-style: italic; font-size: 14px;
+            color: rgba(0,0,0,0.5); margin-bottom: 40px;
+        }
+        h2 {
+            font-size: 18px; font-weight: normal; letter-spacing: 0.03em;
+            margin: 44px 0 16px; padding-bottom: 6px;
+            border-bottom: 1px solid rgba(0,0,0,0.1);
+        }
+        .intro {
+            font-size: 14px; line-height: 1.7; color: rgba(0,0,0,0.65);
+            margin-bottom: 32px;
+        }
+
+        /* Visitor bars */
+        .stat-row {
+            display: flex; align-items: center; margin: 6px 0; gap: 10px;
+        }
+        .stat-label {
+            font-family: 'Courier New', monospace; font-size: 12px;
+            width: 200px; flex-shrink: 0; color: #222;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .stat-bar {
+            flex: 1; height: 16px; background: rgba(0,0,0,0.06);
+            border-radius: 2px; overflow: hidden;
+        }
+        .stat-fill {
+            height: 100%; background: rgba(0,0,0,0.22); border-radius: 2px;
+            transition: width 0.6s ease;
+        }
+        .stat-count {
+            font-family: 'Courier New', monospace; font-size: 11px;
+            color: rgba(0,0,0,0.45); min-width: 50px; text-align: right;
+        }
+
+        /* Week tabs */
+        .week-tabs {
+            display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px;
+        }
+        .week-tab {
+            font-family: 'Courier New', monospace; font-size: 12px;
+            border: 1px solid rgba(0,0,0,0.2); background: none;
+            padding: 4px 14px; border-radius: 3px; cursor: pointer;
+            color: #222; transition: background 0.2s;
+        }
+        .week-tab:hover { background: rgba(0,0,0,0.05); }
+        .week-tab.active { background: rgba(0,0,0,0.1); }
+
+        /* Poem exhibit cards */
+        .exhibit {
+            background: rgba(242,229,217,0.93); border-radius: 6px;
+            padding: 14px 18px 12px; margin: 12px 0;
+            box-shadow: 0 3px 16px rgba(0,0,0,0.1);
+        }
+        .exhibit .attrib {
+            font-size: 12px; font-style: italic; color: rgba(0,0,0,0.45);
+            margin-bottom: 4px;
+        }
+        .exhibit .meta {
+            font-family: 'Courier New', monospace; font-size: 10px;
+            color: rgba(0,0,0,0.35); margin-bottom: 6px;
+        }
+        .exhibit .verse {
+            font-size: 14px; line-height: 1.6; white-space: pre-line;
+        }
+
+        /* Summary stats */
+        .stats-summary {
+            font-family: 'Courier New', monospace; font-size: 12px;
+            color: rgba(0,0,0,0.5); text-align: center;
+            margin-bottom: 32px; line-height: 1.8;
+        }
+        .stats-summary .num {
+            color: #222; font-size: 13px;
+        }
+
+        /* Preferred exhibitions — country sub-sections */
+        .country-exhibit {
+            background: rgba(242,229,217,0.93); border-radius: 6px;
+            padding: 14px 18px 12px; margin: 12px 0;
+        }
+        .country-exhibit h3 {
+            font-family: Georgia, serif; font-size: 15px; font-weight: normal;
+            margin-bottom: 8px; color: #222;
+        }
+        .country-exhibit .cat-list {
+            font-family: 'Courier New', monospace; font-size: 12px;
+            color: rgba(0,0,0,0.6); line-height: 1.8;
+        }
+
+        /* Hourly chart */
+        .hourly-grid {
+            display: flex; align-items: flex-end; gap: 2px;
+            height: 80px; margin: 16px 0 4px;
+            padding: 0 2px;
+        }
+        .hourly-col {
+            flex: 1; display: flex; flex-direction: column;
+            align-items: center; justify-content: flex-end; height: 100%;
+        }
+        .hourly-bar {
+            width: 100%; background: rgba(0,0,0,0.22); border-radius: 1px 1px 0 0;
+            min-height: 2px; transition: height 0.6s ease;
+        }
+        .hourly-labels {
+            display: flex; gap: 2px; padding: 0 2px;
+        }
+        .hourly-labels span {
+            flex: 1; text-align: center;
+            font-family: 'Courier New', monospace; font-size: 9px;
+            color: rgba(0,0,0,0.35);
+        }
+
+        /* Footer */
+        .museum-footer {
+            text-align: center; margin-top: 48px; padding-top: 16px;
+            border-top: 1px solid rgba(0,0,0,0.1);
+            font-family: 'Courier New', monospace; font-size: 11px;
+            color: rgba(0,0,0,0.4);
+        }
+        .museum-footer a {
+            color: rgba(0,0,0,0.5); text-decoration: none;
+        }
+        .museum-footer a:hover { color: rgba(0,0,0,0.7); }
+
+        /* Loading */
+        .loading {
+            text-align: center; font-style: italic; font-size: 14px;
+            color: rgba(0,0,0,0.4); padding: 40px 0;
+        }
+
+        /* Empty state */
+        .empty {
+            font-style: italic; font-size: 13px;
+            color: rgba(0,0,0,0.35); padding: 12px 0;
+        }
+
+        @media (max-width: 600px) {
+            .museum { padding: 24px 16px 40px; }
+            h1 { font-size: 20px; }
+            .stat-label { min-width: 100px; font-size: 11px; }
+            .exhibit { padding: 12px 14px 10px; }
+            .exhibit .verse { font-size: 13px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="museum">
+        <h1>The Honeypo(e)t Museum</h1>
+        <div class="subtitle">Where the internet's background radiation becomes art.</div>
+
+        <div id="summary" class="stats-summary"></div>
+
+        <p class="intro">
+            Every day, machines knock on every door they can find &mdash; probing, scanning, testing.
+            They come from everywhere. They never stop. And here, every knock becomes a poem.
+            Welcome to the museum. These are our visitors, our exhibitions, and the spirit of the times woven into verse.
+        </p>
+
+        <h2>Top Countries</h2>
+        <div id="countries"><div class="loading">Loading&hellip;</div></div>
+
+        <h2 style="margin-top:32px">Top Cities</h2>
+        <div id="cities"></div>
+
+        <h2>This Week's Exhibition</h2>
+        <div id="week-tabs" class="week-tabs"></div>
+        <div id="exhibits"></div>
+
+        <h2>Museum Engagement Report</h2>
+        <p class="intro">How our visitors behave &mdash; their temperaments, their preferred exhibitions, how long they linger, and when the halls are busiest.</p>
+
+        <h2 style="margin-top:32px">Visitor Profiles</h2>
+        <p class="intro">Every visitor has a temperament. Some rush through every room, others return day after day to the same painting.</p>
+        <div id="behaviors"><div class="loading">Loading&hellip;</div></div>
+
+        <h2 style="margin-top:32px">Preferred Exhibitions</h2>
+        <p class="intro">What draws each nation's visitors. The exhibitions they return to most.</p>
+        <div id="preferred-exhibits"></div>
+
+        <h2 style="margin-top:32px">Average Stay</h2>
+        <p class="intro">Average visits per visitor, by country. Some pass through once; others settle in.</p>
+        <div id="avg-stay"></div>
+
+        <h2 style="margin-top:32px">Opening Hours</h2>
+        <p class="intro">When the museum is busiest. The internet never sleeps, but it does have habits.</p>
+        <div id="hourly-chart"></div>
+
+        <div class="museum-footer">
+            <a href="/">Return to the Gallery</a> &middot;
+            &copy; 2026 M. Quest &middot;
+            <a href="https://github.com/vrontier/honeypoet">source</a>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        var CC = {AF:'Afghanistan',AL:'Albania',DZ:'Algeria',AO:'Angola',AR:'Argentina',AM:'Armenia',AU:'Australia',AT:'Austria',AZ:'Azerbaijan',BD:'Bangladesh',BY:'Belarus',BE:'Belgium',BJ:'Benin',BO:'Bolivia',BA:'Bosnia and Herzegovina',BR:'Brazil',BG:'Bulgaria',BF:'Burkina Faso',KH:'Cambodia',CM:'Cameroon',CA:'Canada',CL:'Chile',CN:'China',CO:'Colombia',CD:'Congo',CR:'Costa Rica',HR:'Croatia',CU:'Cuba',CY:'Cyprus',CZ:'Czechia',DK:'Denmark',DO:'Dominican Republic',EC:'Ecuador',EG:'Egypt',SV:'El Salvador',EE:'Estonia',ET:'Ethiopia',FI:'Finland',FR:'France',GE:'Georgia',DE:'Germany',GH:'Ghana',GR:'Greece',GT:'Guatemala',GN:'Guinea',HT:'Haiti',HN:'Honduras',HK:'Hong Kong',HU:'Hungary',IS:'Iceland',IN:'India',ID:'Indonesia',IR:'Iran',IQ:'Iraq',IE:'Ireland',IL:'Israel',IT:'Italy',JM:'Jamaica',JP:'Japan',JO:'Jordan',KZ:'Kazakhstan',KE:'Kenya',KP:'North Korea',KR:'South Korea',KW:'Kuwait',KG:'Kyrgyzstan',LA:'Laos',LV:'Latvia',LB:'Lebanon',LY:'Libya',LT:'Lithuania',LU:'Luxembourg',MG:'Madagascar',MY:'Malaysia',ML:'Mali',MX:'Mexico',MD:'Moldova',MN:'Mongolia',ME:'Montenegro',MA:'Morocco',MZ:'Mozambique',MM:'Myanmar',NP:'Nepal',NL:'Netherlands',NZ:'New Zealand',NI:'Nicaragua',NE:'Niger',NG:'Nigeria',NO:'Norway',OM:'Oman',PK:'Pakistan',PA:'Panama',PY:'Paraguay',PE:'Peru',PH:'Philippines',PL:'Poland',PT:'Portugal',QA:'Qatar',RO:'Romania',RU:'Russia',RW:'Rwanda',SA:'Saudi Arabia',SN:'Senegal',RS:'Serbia',SC:'Seychelles',SG:'Singapore',SK:'Slovakia',SI:'Slovenia',SO:'Somalia',ZA:'South Africa',ES:'Spain',LK:'Sri Lanka',SD:'Sudan',SE:'Sweden',CH:'Switzerland',SY:'Syria',TW:'Taiwan',TJ:'Tajikistan',TZ:'Tanzania',TH:'Thailand',TN:'Tunisia',TR:'Turkey',TM:'Turkmenistan',UA:'Ukraine',AE:'United Arab Emirates',GB:'United Kingdom',US:'United States',UY:'Uruguay',UZ:'Uzbekistan',VE:'Venezuela',VN:'Vietnam',YE:'Yemen',ZM:'Zambia',ZW:'Zimbabwe'};
+
+        function esc(t) { return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+        function cleanPoemForCard(raw) {
+            if (!raw) return '';
+            var s = raw.replace(/\\r\\n/g, '\n').replace(/\r\n/g, '\n');
+            var t = s.replace(/^(json|php|html|http|xml|sql|css|plaintext|text)\s*\n/i, '').trim();
+            if (/^(GET |HEAD |POST |PUT |DELETE |OPTIONS )/i.test(t)) return '';
+            if (/^> (GET|HEAD|POST|PUT) /i.test(t)) return '';
+            if (/^\s*[\[{]/.test(t) && /[\]}]\s*$/.test(t)) return '';
+            if (/^<\?php/i.test(t)) return '';
+            if (/^#\w|^class \w|^function \w|^import |^require |^package /i.test(t)) return '';
+            s = s.replace(/^[\s\S]*?(?:A (?:visitor|scanner) just[\s\S]*?\n\n)/i, '');
+            s = s.replace(/^Visitor:[\s\S]*?\n\n/i, '');
+            s = s.replace(/^Your (work|poem|task|response)[\s\S]*?\n\n/i, '');
+            s = s.replace(/^[\s\S]*\n---\n/, '');
+            s = s.replace(/<[a-z_-]+>\s*=\s*"[^"]*"/gi, '');
+            s = s.replace(/\[[\d.]+\]/g, '');
+            s = s.replace(/\*\*Honeypoet'?s?\s+(response|poem):?\*\*:?/gi, '');
+            s = s.replace(/^Honeypoet'?s?\s+(response|poem):?\s*\n/gim, '');
+            s = s.replace(/\{[\s\S]*?\}/g, function(m) { return /\"(path|method|from|poem)\"/.test(m) ? '' : m; });
+            s = s.replace(/https?:\/\/\S+/g, '');
+            var pLines = s.split('\n');
+            var clean = [];
+            for (var pi = 0; pi < pLines.length; pi++) {
+                var pl = pLines[pi].replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu, '').trim();
+                if (!pl || /^[-<>*#=_`~]+$/.test(pl)) continue;
+                if (/^```/.test(pl)) continue;
+                var lo = pl.toLowerCase();
+                if (/^(use |make |no |write |here is |here's |give |close |end |answer |imagine |let |guidelines|instructions|stay |convey |conclude |maintain |keep |ensure |avoid |include |the (poem|haiku|visit|letter|drawer|log|door)|format |do not |don't |be (sure|philosophical|creative)|your (answer|poem|response)|remember |try |consider |think |in het |auf deutsch|en fran|embrace |and if you|and remember|note:?$|visiting |visitor |visited |knocked |the .+ should|the .+ captures|the .+ lasted|the .+ contains|the .+ reads)/i.test(lo)) continue;
+                if (/^- /i.test(pl) && !/[,.]$/.test(pl)) continue;
+                if (/^\*\*.+\*\*:?\s*$/.test(pl)) continue;
+                if (/^(json|php|html|http|xml|sql|css|plaintext|text)\s*$/i.test(pl)) continue;
+                if (/^(GET|HEAD|POST|PUT|DELETE|OPTIONS) \//i.test(pl)) continue;
+                if (/^(Host|User-Agent|Accept|Referer|Connection|Upgrade|Content-|Cookie|Authorization|Cache-|Pragma|Origin|DNT|Sec-|X-|Via|From:|If-)[\w-]*:\s*/i.test(pl)) continue;
+                if (/^<\?php|^<\/?\w+[\s>\/]|^<!\w|;\s*$|^\$\w|^echo |^session_|^document\.|^function\s*[\(\{]|^location\.|^class \w|^public |^private |^return |^var |^const |^let |^import /i.test(pl)) continue;
+                if (/^\/[\w.-]+\.php/i.test(pl)) continue;
+                if (/^(from|path|method|ip|host|visitor|request|response)\s*:/i.test(lo)) continue;
+                if (/^your (work|poem|task|response)[ :]/i.test(lo)) continue;
+                if (/^(the )?honeypoet'?s?\s+(poem|response|says)/i.test(lo)) continue;
+                if (/^(i await|no other text|honeypoet,?\s+(begin|your))/i.test(lo)) continue;
+                if (/^tagline:|^title:|^poem:/i.test(lo)) continue;
+                if (/^(wp |wordpress )/i.test(lo) && pl.length < 30) continue;
+                clean.push(pl);
+            }
+            while (clean.length && clean[0] === '') clean.shift();
+            while (clean.length && clean[clean.length - 1] === '') clean.pop();
+            s = clean.join('\n');
+            s = s.replace(/`/g, '').replace(/\*\*/g, '').replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu, '');
+            s = s.replace(/(\d{1,3})\.\d{1,3}\.\d{1,3}\.(\d{1,3})/g, '$1.x.x.$2');
+            s = s.replace(/\n{3,}/g, '\n\n');
+            s = s.trim();
+            var stanzas = s.split('\n\n');
+            if (stanzas.length > 3) s = stanzas.slice(0, 3).join('\n\n');
+            var lines = s.split('\n');
+            if (lines.length > 12) s = lines.slice(0, 12).join('\n');
+            if (s.length < 20) return '';
+            return s;
+        }
+
+        function renderBars(container, items, labelFn, maxCount) {
+            var html = '';
+            for (var i = 0; i < items.length; i++) {
+                var item = items[i];
+                var pct = Math.round((item.count / maxCount) * 100);
+                html += '<div class="stat-row">' +
+                    '<span class="stat-label">' + esc(labelFn(item)) + '</span>' +
+                    '<div class="stat-bar"><div class="stat-fill" style="width:' + pct + '%"></div></div>' +
+                    '<span class="stat-count">' + item.count.toLocaleString() + '</span>' +
+                    '</div>';
+            }
+            document.getElementById(container).innerHTML = html || '<div class="empty">No data yet.</div>';
+        }
+
+        function renderExhibits(exhibits, activeWeek) {
+            var weeks = Object.keys(exhibits).sort().reverse();
+            if (weeks.length === 0) {
+                document.getElementById('week-tabs').innerHTML = '';
+                document.getElementById('exhibits').innerHTML = '<div class="empty">The first exhibition is being prepared&hellip;</div>';
+                return;
+            }
+
+            if (!activeWeek || weeks.indexOf(activeWeek) === -1) activeWeek = weeks[0];
+
+            var tabsHtml = '';
+            for (var i = 0; i < weeks.length; i++) {
+                var cls = weeks[i] === activeWeek ? ' active' : '';
+                tabsHtml += '<button class="week-tab' + cls + '" data-week="' + esc(weeks[i]) + '">' + esc(weeks[i]) + '</button>';
+            }
+            document.getElementById('week-tabs').innerHTML = tabsHtml;
+
+            var poems = exhibits[activeWeek] || [];
+            var html = '';
+            for (var j = 0; j < poems.length; j++) {
+                var p = poems[j];
+                var isCode = (p.response_type === 'llm_code');
+                var text = isCode ? (p.response_content || '').trim() : cleanPoemForCard(p.response_content);
+                if (!text) continue;
+
+                var nameStr = p.visitor_name || 'Someone';
+                if (p.visitor_behavior) {
+                    nameStr += ', the ' + p.visitor_behavior.charAt(0).toUpperCase() + p.visitor_behavior.slice(1);
+                }
+                var countryName = p.country ? (CC[p.country] || p.country) : '';
+                var cat = p.attack_category || '';
+                var archetype = cat === 'visitor' ? 'gallery visit' : (cat ? cat.replace(/_/g, ' ') : '');
+                var ts = p.timestamp || '';
+                var dateStr = ts ? ts.substring(0, 10) : '';
+
+                var verseStyle = isCode ? ' style="font-family:\'Courier New\',monospace;font-size:12px;line-height:1.5"' : '';
+                html += '<div class="exhibit">' +
+                    '<div class="attrib">For ' + esc(nameStr) + (countryName ? ' from ' + esc(countryName) : '') + '</div>' +
+                    '<div class="meta">' + esc(archetype) + (dateStr ? ' \u00b7 ' + esc(dateStr) : '') + '</div>' +
+                    '<div class="verse"' + verseStyle + '>' + esc(text) + '</div>' +
+                    '</div>';
+            }
+            document.getElementById('exhibits').innerHTML = html || '<div class="empty">No poems this week.</div>';
+
+            // Tab click handlers
+            var tabs = document.querySelectorAll('.week-tab');
+            for (var k = 0; k < tabs.length; k++) {
+                tabs[k].onclick = function() { renderExhibits(exhibits, this.getAttribute('data-week')); };
+            }
+        }
+
+        // Fetch and render
+        fetch('/_api/museum')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                // Summary
+                var since = data.since ? data.since.substring(0, 10) : '?';
+                document.getElementById('summary').innerHTML =
+                    '<span class="num">' + (data.total_visitors || 0).toLocaleString() + '</span> visitors' +
+                    ' &middot; <span class="num">' + (data.total_poems || 0).toLocaleString() + '</span> poems' +
+                    ' &middot; <span class="num">' + (data.countries ? data.countries.length : 0) + '+</span> countries' +
+                    '<br>since ' + esc(since);
+
+                // Countries
+                var countries = data.countries || [];
+                var maxC = countries.length > 0 ? countries[0].count : 1;
+                renderBars('countries', countries, function(c) {
+                    return (CC[c.country] || c.country) + ' (' + c.country + ')';
+                }, maxC);
+
+                // Cities
+                var cities = data.cities || [];
+                var maxCity = cities.length > 0 ? cities[0].count : 1;
+                renderBars('cities', cities, function(c) {
+                    return c.city + ', ' + c.country;
+                }, maxCity);
+
+                // Exhibits
+                renderExhibits(data.exhibits || {});
+
+                // Behavior mapping — museum metaphors
+                var behaviorNames = {
+                    ghostly: 'Day visitors',
+                    curious: 'Browsers',
+                    patient: 'Season ticket holders',
+                    methodical: 'Researchers',
+                    relentless: 'Regulars',
+                    hectic: 'Tour groups'
+                };
+                var behaviorDescs = {
+                    ghostly: 'came once, gone',
+                    curious: 'wandered between exhibits',
+                    patient: 'keep coming back',
+                    methodical: 'systematic, thorough',
+                    relentless: 'same exhibit, every day',
+                    hectic: 'everywhere at once'
+                };
+
+                // Category exhibition names
+                var catNames = {
+                    wordpress: 'The WordPress Gallery',
+                    admin_panel: 'The Control Room',
+                    env_file: 'The Archive of Secrets',
+                    api_probe: 'The Data Hall',
+                    generic_scan: 'The Grand Tour',
+                    credential_submit: 'The Login Desk',
+                    dev_tools: 'The Workshop',
+                    webshell: 'The Back Door',
+                    upload_exploit: 'The Loading Dock',
+                    vcs_leak: 'The Version Vault',
+                    cms_fingerprint: 'The Registry',
+                    iot_exploit: 'The Machine Room',
+                    multi_protocol: 'The Wrong Hallway',
+                    config_file: 'The Filing Cabinet',
+                    visitor: 'The Lobby'
+                };
+
+                // Visitor Profiles
+                var behaviors = data.behaviors || [];
+                if (behaviors.length > 0) {
+                    var maxB = behaviors[0].count;
+                    var bhtml = '';
+                    for (var bi = 0; bi < behaviors.length; bi++) {
+                        var b = behaviors[bi];
+                        var bName = behaviorNames[b.behavior] || b.behavior;
+                        var bDesc = behaviorDescs[b.behavior] || '';
+                        var bPct = Math.round((b.count / maxB) * 100);
+                        var label = bName + (bDesc ? ' \u2014 ' + bDesc : '');
+                        bhtml += '<div class="stat-row">' +
+                            '<span class="stat-label" style="width:310px">' + esc(label) + '</span>' +
+                            '<div class="stat-bar"><div class="stat-fill" style="width:' + bPct + '%"></div></div>' +
+                            '<span class="stat-count">' + b.count.toLocaleString() + '</span>' +
+                            '</div>';
+                    }
+                    document.getElementById('behaviors').innerHTML = bhtml;
+                } else {
+                    document.getElementById('behaviors').innerHTML = '<div class="empty">No visitor profiles yet.</div>';
+                }
+
+                // Preferred Exhibitions
+                var topCats = data.top_categories_by_country || {};
+                var tcKeys = Object.keys(topCats);
+                if (tcKeys.length > 0) {
+                    var peHtml = '';
+                    for (var ti = 0; ti < tcKeys.length; ti++) {
+                        var tcCountry = tcKeys[ti];
+                        var tcList = topCats[tcCountry];
+                        var cName = CC[tcCountry] || tcCountry;
+                        peHtml += '<div class="country-exhibit">' +
+                            '<h3>' + esc(cName) + '</h3><div class="cat-list">';
+                        for (var ci = 0; ci < tcList.length; ci++) {
+                            var catKey = tcList[ci].category;
+                            var exName = catNames[catKey] || catKey.replace(/_/g, ' ');
+                            peHtml += (ci > 0 ? '<br>' : '') +
+                                esc(exName) + ' \u2014 ' +
+                                '<span style="color:rgba(0,0,0,0.4)">' + tcList[ci].count.toLocaleString() + ' visitors</span>';
+                        }
+                        peHtml += '</div></div>';
+                    }
+                    document.getElementById('preferred-exhibits').innerHTML = peHtml;
+                } else {
+                    document.getElementById('preferred-exhibits').innerHTML = '<div class="empty">Not enough data yet.</div>';
+                }
+
+                // Average Stay
+                var avgData = data.avg_visits_by_country || [];
+                if (avgData.length > 0) {
+                    var maxAvg = 0;
+                    for (var ai = 0; ai < avgData.length; ai++) {
+                        if (avgData[ai].avg_visits > maxAvg) maxAvg = avgData[ai].avg_visits;
+                    }
+                    var avgHtml = '';
+                    for (var aj = 0; aj < avgData.length; aj++) {
+                        var ac = avgData[aj];
+                        var aPct = Math.round((ac.avg_visits / maxAvg) * 100);
+                        var aLabel = (CC[ac.country] || ac.country);
+                        avgHtml += '<div class="stat-row">' +
+                            '<span class="stat-label">' + esc(aLabel) + '</span>' +
+                            '<div class="stat-bar"><div class="stat-fill" style="width:' + aPct + '%"></div></div>' +
+                            '<span class="stat-count">' + ac.avg_visits + ' avg</span>' +
+                            '</div>';
+                    }
+                    document.getElementById('avg-stay').innerHTML = avgHtml;
+                } else {
+                    document.getElementById('avg-stay').innerHTML = '<div class="empty">Not enough data yet.</div>';
+                }
+
+                // Opening Hours
+                var hourly = data.hourly_activity || [];
+                if (hourly.length > 0) {
+                    var hourMap = {};
+                    var maxH = 0;
+                    for (var hi = 0; hi < hourly.length; hi++) {
+                        hourMap[hourly[hi].hour] = hourly[hi].count;
+                        if (hourly[hi].count > maxH) maxH = hourly[hi].count;
+                    }
+                    var hHtml = '<div class="hourly-grid">';
+                    for (var hh = 0; hh < 24; hh++) {
+                        var hCount = hourMap[hh] || 0;
+                        var hPct = maxH > 0 ? Math.round((hCount / maxH) * 100) : 0;
+                        hHtml += '<div class="hourly-col" title="' + hh + ':00 UTC \u2014 ' + hCount.toLocaleString() + ' visits">' +
+                            '<div class="hourly-bar" style="height:' + Math.max(hPct, 3) + '%"></div>' +
+                            '</div>';
+                    }
+                    hHtml += '</div><div class="hourly-labels">';
+                    for (var hl = 0; hl < 24; hl++) {
+                        hHtml += '<span>' + (hl % 3 === 0 ? hl : '') + '</span>';
+                    }
+                    hHtml += '</div>';
+                    document.getElementById('hourly-chart').innerHTML = hHtml;
+                } else {
+                    document.getElementById('hourly-chart').innerHTML = '<div class="empty">No hourly data yet.</div>';
+                }
+
+            })
+            .catch(function(e) {
+                console.error('Museum fetch error:', e);
+            });
     })();
     </script>
 </body>
