@@ -170,6 +170,22 @@ func TestCleanPoem(t *testing.T) {
 			raw:  "server: nginx/1.24\n\nA quiet knock upon the door,\nThe server hums forevermore.",
 			want: "A quiet knock upon the door,\nThe server hums forevermore.",
 		},
+		// Bare URL path detection
+		{
+			name: "bare path as list item",
+			raw:  "- /wp-login.php",
+			want: "",
+		},
+		{
+			name: "bare path on its own",
+			raw:  "/wp-admin/setup-config.php",
+			want: "",
+		},
+		{
+			name: "list of paths stripped to nothing",
+			raw:  "- /wp-login.php\n- /wp-admin/\n- /xmlrpc.php",
+			want: "",
+		},
 		// Prompt-aware echo detection tests
 		{
 			name:   "prompt echo: format line repeated in response",

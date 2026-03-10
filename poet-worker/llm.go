@@ -454,6 +454,14 @@ func isNoiseLine(raw string) bool {
 				return true
 			}
 		}
+		// Bare URL paths as list items: "- /wp-login.php", "- /admin/setup.php"
+		if strings.HasPrefix(rest, "/") && !strings.Contains(rest, " ") {
+			return true
+		}
+	}
+	// Bare URL paths on their own: "/wp-login.php", "/admin/config"
+	if strings.HasPrefix(lower, "/") && !strings.Contains(lower, " ") {
+		return true
 	}
 	return false
 }
