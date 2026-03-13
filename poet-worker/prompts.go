@@ -65,6 +65,19 @@ func promptForVisit(v visit, behavior string) (string, string) {
 		zeitgeist = zeitgeistHint(v.Country)
 	}
 
+	// 1-in-4 chance: add time-of-day flavor
+	timeStr := ""
+	if shouldDoTimeAware() {
+		timeStr = timeHint(v.Longitude.Float64, v.Longitude.Valid)
+	}
+
+	// 1-in-4 chance: add weather flavor
+	weatherStr := ""
+	if shouldDoWeather() {
+		hasCoords := v.Latitude.Valid && v.Longitude.Valid
+		weatherStr = weatherHint(v.Latitude.Float64, v.Longitude.Float64, hasCoords)
+	}
+
 	var prompt string
 	rtype := responseTypeFor(v.AttackCategory)
 
@@ -103,9 +116,15 @@ func promptForVisit(v visit, behavior string) (string, string) {
 		prompt = promptGenericScan(v, behavior)
 	}
 
-	// Append zeitgeist flavor if rolled
+	// Append contextual flavors if rolled
 	if zeitgeist != "" {
 		prompt += zeitgeist
+	}
+	if timeStr != "" {
+		prompt += timeStr
+	}
+	if weatherStr != "" {
+		prompt += weatherStr
 	}
 
 	return prompt, rtype

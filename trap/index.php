@@ -322,8 +322,30 @@ if ($clean_path === '/_api/museum' && $method === 'GET') {
               AND v.visitor_id IS NOT NULL
             GROUP BY v.country
             HAVING visitors >= 3
-            ORDER BY visitors DESC LIMIT 10
+            ORDER BY avg_visits DESC LIMIT 25
         ')->fetchAll();
+
+        // Hall of Persistence — top 15 most devoted visitors
+        $hall_of_persistence = [];
+        try {
+            $hall_of_persistence = $db->query('
+                SELECT
+                    vis.name,
+                    vis.behavior,
+                    vis.visit_count,
+                    vis.first_seen,
+                    vis.last_seen,
+                    (SELECT COUNT(*) FROM visits v2
+                     WHERE v2.visitor_id = vis.id AND v2.llm_generated = 1) as poems_written,
+                    (SELECT v3.country FROM visits v3
+                     WHERE v3.visitor_id = vis.id AND v3.country IS NOT NULL AND v3.country != ""
+                     ORDER BY v3.id DESC LIMIT 1) as country
+                FROM visitors vis
+                WHERE vis.visit_count >= 10
+                ORDER BY vis.visit_count DESC
+                LIMIT 15
+            ')->fetchAll();
+        } catch (\PDOException $e) {}
 
         header('Content-Type: application/json');
         header('Cache-Control: public, max-age=300');
@@ -340,6 +362,7 @@ if ($clean_path === '/_api/museum' && $method === 'GET') {
             'top_categories_by_country' => $top_categories_by_country,
             'hourly_activity' => $hourly_activity,
             'avg_visits_by_country' => $avg_visits_by_country,
+            'hall_of_persistence' => $hall_of_persistence,
         ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     } catch (\PDOException $e) {
         error_log("honeypoet: museum API error: " . $e->getMessage());
@@ -1752,6 +1775,42 @@ function serve_museum(): void
             color: rgba(0,0,0,0.35);
         }
 
+        /* Hall of Persistence */
+        .patron-card {
+            background: rgba(242,229,217,0.93); border-radius: 6px;
+            padding: 14px 18px 12px; margin: 10px 0;
+            box-shadow: 0 3px 16px rgba(0,0,0,0.1);
+            border-left: 3px solid transparent;
+        }
+        .patron-card.rank-1 { border-left-color: #c9a84c; }
+        .patron-card.rank-2 { border-left-color: #a0a0a0; }
+        .patron-card.rank-3 { border-left-color: #b07840; }
+        .patron-name {
+            font-size: 15px; font-style: italic; color: #222;
+            margin-bottom: 1px;
+        }
+        .patron-card.rank-1 .patron-name { font-size: 16px; }
+        .patron-title {
+            font-family: 'Courier New', monospace; font-size: 11px;
+            color: rgba(0,0,0,0.4); margin-bottom: 6px;
+        }
+        .patron-meta {
+            font-family: 'Courier New', monospace; font-size: 11px;
+            color: rgba(0,0,0,0.45); line-height: 1.7;
+        }
+        .patron-bar-wrap {
+            height: 4px; background: rgba(0,0,0,0.06);
+            border-radius: 2px; margin-top: 8px; overflow: hidden;
+        }
+        .patron-bar {
+            height: 100%; background: rgba(0,0,0,0.18);
+            border-radius: 2px; transition: width 0.6s ease;
+        }
+        .patron-rank {
+            font-family: 'Courier New', monospace; font-size: 10px;
+            color: rgba(0,0,0,0.3); float: right; margin-top: 2px;
+        }
+
         /* Footer */
         .museum-footer {
             text-align: center; margin-top: 48px; padding-top: 16px;
@@ -1826,6 +1885,10 @@ function serve_museum(): void
         <h2 style="margin-top:32px">Opening Hours</h2>
         <p class="intro">When the museum is busiest. The internet never sleeps, but it does have habits.</p>
         <div id="hourly-chart"></div>
+
+        <h2 style="margin-top:44px">Hall of Persistence</h2>
+        <p class="intro">Our most devoted visitors. They come back, again and again, knocking on every door. The museum remembers them all.</p>
+        <div id="hall-of-persistence"><div class="loading">Loading&hellip;</div></div>
 
         <div class="museum-footer">
             <a href="/">Return to the Gallery</a> &middot;
@@ -2123,6 +2186,55 @@ function serve_museum(): void
                     document.getElementById('hourly-chart').innerHTML = hHtml;
                 } else {
                     document.getElementById('hourly-chart').innerHTML = '<div class="empty">No hourly data yet.</div>';
+                }
+
+                // Hall of Persistence
+                var hall = data.hall_of_persistence || [];
+                var behaviorTitles = {
+                    ghostly: 'the Passing Shadow',
+                    curious: 'the Explorer',
+                    patient: 'the Devoted',
+                    methodical: 'the Researcher',
+                    relentless: 'the Relentless',
+                    hectic: 'the Whirlwind'
+                };
+                if (hall.length > 0) {
+                    var maxVisits = hall[0].visit_count || 1;
+                    var hpHtml = '';
+                    for (var hi = 0; hi < hall.length; hi++) {
+                        var patron = hall[hi];
+                        var pName = patron.name || 'Anonymous';
+                        var pCountry = patron.country ? (CC[patron.country] || patron.country) : 'Unknown origin';
+                        var pTitle = behaviorTitles[patron.behavior] || '';
+                        var pVisits = patron.visit_count || 0;
+                        var pPoems = patron.poems_written || 0;
+                        var barPct = Math.round((pVisits / maxVisits) * 100);
+
+                        var duration = '';
+                        if (patron.first_seen && patron.last_seen) {
+                            var first = new Date(patron.first_seen.replace(' ', 'T') + 'Z');
+                            var last = new Date(patron.last_seen.replace(' ', 'T') + 'Z');
+                            var days = Math.max(1, Math.ceil((last - first) / (1000 * 60 * 60 * 24)));
+                            duration = days === 1 ? '1 day' : days + ' days';
+                        }
+
+                        var rankClass = hi < 3 ? ' rank-' + (hi + 1) : '';
+                        hpHtml += '<div class="patron-card' + rankClass + '">' +
+                            '<span class="patron-rank">#' + (hi + 1) + '</span>' +
+                            '<div class="patron-name">' + esc(pName) + '</div>' +
+                            (pTitle ? '<div class="patron-title">' + esc(pTitle) + ' \u00b7 ' + esc(pCountry) + '</div>' : '') +
+                            '<div class="patron-meta">' +
+                            pVisits.toLocaleString() + ' visits' +
+                            ' \u00b7 ' + pPoems.toLocaleString() + ' poems' +
+                            (duration ? ' \u00b7 visiting for ' + esc(duration) : '') +
+                            '</div>' +
+                            '<div class="patron-bar-wrap"><div class="patron-bar" style="width:' + barPct + '%"></div></div>' +
+                            '</div>';
+                    }
+                    document.getElementById('hall-of-persistence').innerHTML = hpHtml;
+                } else {
+                    document.getElementById('hall-of-persistence').innerHTML =
+                        '<div class="empty">The hall awaits its first devoted visitor.</div>';
                 }
 
             })

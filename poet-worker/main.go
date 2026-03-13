@@ -62,6 +62,8 @@ type visit struct {
 	VisitorID      sql.NullInt64
 	Behavior       string
 	VisitCount     int
+	Latitude       sql.NullFloat64
+	Longitude      sql.NullFloat64
 }
 
 func main() {
@@ -232,7 +234,8 @@ func processVisits(db *sql.DB, llm *llmClient, batchSize int) {
 	rows, err := db.Query(`
 		SELECT id, path, method,
 			COALESCE(city, ''), COALESCE(country, ''),
-			attack_category, COALESCE(user_agent, ''), visitor_id
+			attack_category, COALESCE(user_agent, ''), visitor_id,
+			latitude, longitude
 		FROM visits
 		WHERE llm_generated IS NULL OR llm_generated = 0
 		ORDER BY id DESC
@@ -247,7 +250,7 @@ func processVisits(db *sql.DB, llm *llmClient, batchSize int) {
 	var visits []visit
 	for rows.Next() {
 		var v visit
-		if err := rows.Scan(&v.ID, &v.Path, &v.Method, &v.City, &v.Country, &v.AttackCategory, &v.UserAgent, &v.VisitorID); err != nil {
+		if err := rows.Scan(&v.ID, &v.Path, &v.Method, &v.City, &v.Country, &v.AttackCategory, &v.UserAgent, &v.VisitorID, &v.Latitude, &v.Longitude); err != nil {
 			log.Printf("scan row: %v", err)
 			continue
 		}
@@ -425,7 +428,8 @@ func runCleanup(db *sql.DB, dryRun bool) {
 		SELECT v.id, v.response_content, v.path, v.method,
 			COALESCE(v.city, ''), COALESCE(v.country, ''),
 			v.attack_category, COALESCE(v.user_agent, ''),
-			v.visitor_id, COALESCE(vr.behavior, '')
+			v.visitor_id, COALESCE(vr.behavior, ''),
+			v.latitude, v.longitude
 		FROM visits v
 		LEFT JOIN visitors vr ON v.visitor_id = vr.id
 		WHERE v.llm_generated = 1 AND v.response_content IS NOT NULL
@@ -442,7 +446,8 @@ func runCleanup(db *sql.DB, dryRun bool) {
 		var content string
 		var v visit
 		if err := rows.Scan(&id, &content, &v.Path, &v.Method, &v.City, &v.Country,
-			&v.AttackCategory, &v.UserAgent, &v.VisitorID, &v.Behavior); err != nil {
+			&v.AttackCategory, &v.UserAgent, &v.VisitorID, &v.Behavior,
+			&v.Latitude, &v.Longitude); err != nil {
 			log.Printf("scan row: %v", err)
 			continue
 		}
