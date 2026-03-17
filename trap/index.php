@@ -236,7 +236,7 @@ if ($clean_path === '/_api/museum' && $method === 'GET') {
         $exhibits = [];
         for ($w = 0; $w < 4; $w++) {
             $weekStart = date('Y-m-d', strtotime("monday this week -" . ($w * 7) . " days"));
-            $weekEnd   = date('Y-m-d', strtotime("monday this week -" . (($w - 1) * 7) . " days"));
+            $weekEnd   = date('Y-m-d', strtotime($weekStart . " +7 days"));
             $weekLabel = date('Y-\\WW', strtotime($weekStart));
 
             $stmt = $db->prepare('
