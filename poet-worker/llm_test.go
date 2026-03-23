@@ -205,6 +205,67 @@ func TestCleanPoem(t *testing.T) {
 			prompt: "Preamble here.\n\nA scanner just probed:\n- Path: /wp-admin/setup-config.php\n- From: Stockholm, SE\n\nHaiku:\n",
 			want:   "The pilgrim returns,\nKnocking on the fog again,\nNo WordPress was here.",
 		},
+		// --- Phi-specific failure patterns (observed Mar 2026) ---
+		{
+			name: "mid-line instruction bleed: let this color the mood",
+			raw:  "The hues of dusk, the fading light — let this color the mood subtly.\nShadows stretch, the sun dips — let this be felt.\nWhere this door has hung so long — it witnesses many such stories.",
+			want: "The hues of dusk, the fading light\nShadows stretch, the sun dips\nWhere this door has hung so long — it witnesses many such stories.",
+		},
+		{
+			name: "mid-line instruction bleed: em-dash let this",
+			raw:  "Sunlit water. A trace left behind.\nOn this beach, the water is already filling — let this be the mood or emotion of the poem.",
+			want: "Sunlit water. A trace left behind.\nOn this beach, the water is already filling",
+		},
+		{
+			name: "parenthetical instruction",
+			raw:  "(Avoid direct references to the weather.) The poem should evoke a feeling of nostalgia.",
+			want: "",
+		},
+		{
+			name: "fake HTTP response",
+			raw:  "- Status: 302 Found\n- Location: /blog/posts/some-blog-post/",
+			want: "",
+		},
+		{
+			name: "fake HTTP headers block",
+			raw:  "- Status: 304\n- Last-Modified: Wed, 31 Dec 2014 22:06:00 +0000\n- ETag: W/\"b7YQ9j6j4HcG3cFhZpQJm4w8w\"\n- Server: cloudflare\n- Date: Wed, 31 Dec 2014 22:06:00 +0000",
+			want: "",
+		},
+		{
+			name: "repetition loop collapsed",
+			raw:  "A little darker, the night holds its breath.\nA little darker still — the night.\nA little darker still — the night.\nA little darker still — the night.\nA little darker still — the quiet.",
+			want: "A little darker, the night holds its breath.\nA little darker still — the night.\nA little darker still — the quiet.",
+		},
+		{
+			name: "question self-assignment",
+			raw:  "Question: Craft a sestet (six-line poem with a rhyme scheme of ABABCC) that reflects the journey.\n\nIn the realm of ones and zeros, a silent quest unfolds.",
+			want: "In the realm of ones and zeros, a silent quest unfolds.",
+		},
+		{
+			name: "this visitor is instruction echo",
+			raw:  "This visitor is new — let this be the starting point of your poem.\nThis visitor is an outsider — let this be the driving force.\nThis visitor is searching — let this be the mood.",
+			want: "",
+		},
+		{
+			name: "you could say commentary",
+			raw:  "You could say this visitor is a stranger — but a fleeting one.\nYou could say this stranger has been invited — but only to the door.",
+			want: "",
+		},
+		{
+			name: "poem with instruction suffix preserved after strip",
+			raw:  "A spectral knock upon the door, a brief and bright affair,\nA HEAD request sent through the digital air — let this color the mood subtly,\nTwo visits in the dark of night, a whisper and a prayer.",
+			want: "A spectral knock upon the door, a brief and bright affair,\nA HEAD request sent through the digital air\nTwo visits in the dark of night, a whisper and a prayer.",
+		},
+		{
+			name: "no names instruction line",
+			raw:  "No names, just a story of this moment where this visitor is.\nThe light fades gently over distant rooftops.",
+			want: "The light fades gently over distant rooftops.",
+		},
+		{
+			name: "don't spell instruction line",
+			raw:  "Don't spell out this much.\nThe visitor left no fingerprint — only a ghostly digital footprint.",
+			want: "The visitor left no fingerprint — only a ghostly digital footprint.",
+		},
 	}
 
 	for _, tt := range tests {

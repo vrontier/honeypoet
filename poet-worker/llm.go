@@ -13,6 +13,21 @@ import (
 
 var ipPattern = regexp.MustCompile(`\[?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\]?`)
 
+// instructionSuffixPattern catches mid-line instruction bleed where Phi weaves
+// prompt-style directives into poem lines: "shadows stretch — let this color
+// the mood subtly." Strip the suffix, keep the poem. Uses (?m) so $ matches
+// end of each line, not just end of string.
+var instructionSuffixPattern = regexp.MustCompile(`(?im)\s*(?:\x{2014}|\x{2013}|-){1,3}\s*let this\b.*$`)
+
+// parenInstructionPattern matches parenthetical instructions at the start of
+// a line: "(Avoid direct references to the weather.)" — may be followed by
+// more text on the same line.
+var parenInstructionPattern = regexp.MustCompile(`(?i)^\((?:avoid|do not|don't|no |the poem|include|incorporate|mention|remember|keep|ensure|make)\b[^)]*\)\s*`)
+
+// httpHeaderPattern matches HTTP response header lines that Phi sometimes
+// fabricates: "- Status: 302 Found", "- Location: /blog/...", "ETag: W/..."
+var httpHeaderPattern = regexp.MustCompile(`(?i)^-?\s*(?:status:\s*\d|location:\s*/|etag:|x-[a-z]|date:\s*\w{3},|content-type:|cache-control:|last-modified:|server:\s)`)
+
 // formLabels are poetry form names and meta-content markers. When these appear
 // in a section after a blank line, that section (and everything after) is
 // truncated — it's Granite generating variations, not continuing the poem.
@@ -293,6 +308,16 @@ func cleanPoem(raw string, prompt string) string {
 	// Strip markdown bold markers: **text** → text
 	s = markdownBoldPattern.ReplaceAllString(s, "$1")
 
+	// Strip mid-line instruction bleed: "shadows stretch — let this color
+	// the mood subtly" → "shadows stretch". Phi weaves prompt-style
+	// directives into poem lines instead of following them.
+	s = instructionSuffixPattern.ReplaceAllString(s, "")
+
+	// Strip parenthetical instructions from start of lines:
+	// "(Avoid direct references to the weather.) The poem should..." →
+	// "The poem should..." (which then gets caught by noise prefixes)
+	s = parenInstructionPattern.ReplaceAllString(s, "")
+
 	// Build prompt phrases for echo detection
 	phrases := promptPhrases(prompt)
 
@@ -363,6 +388,11 @@ func cleanPoem(raw string, prompt string) string {
 		s = strings.TrimSpace(strings.Join(sections[:keep], "\n\n"))
 	}
 
+	// Deduplicate repetition loops: Phi sometimes gets stuck repeating
+	// the same line or stanza. If any line appears 3+ times, collapse
+	// to a single occurrence.
+	s = deduplicateLines(s)
+
 	// Strip IP addresses
 	s = ipPattern.ReplaceAllString(s, "")
 	s = strings.TrimSpace(s)
@@ -395,6 +425,10 @@ func isNoiseLine(raw string) bool {
 	}
 	// Lines with no ASCII letters (emoji-only, punctuation-only)
 	if !hasASCIILetter(line) {
+		return true
+	}
+	// HTTP response headers (Phi fabricates these)
+	if httpHeaderPattern.MatchString(line) {
 		return true
 	}
 	// Fence language labels on their own
@@ -434,6 +468,10 @@ func isNoiseLine(raw string) bool {
 	}
 	// "from:" on its own (structured data echo, not "from afar" etc.)
 	if lower == "from:" {
+		return true
+	}
+	// "the visit" as meta-commentary, but NOT "the visitor" which is poetic
+	if strings.HasPrefix(lower, "the visit") && !strings.HasPrefix(lower, "the visitor") {
 		return true
 	}
 	// Instruction echo prefixes — expanded from observed Granite outputs
@@ -480,7 +518,8 @@ var noisePrefixes = []string{
 	"show compassion", "show empathy", "show some",
 	"be gentle", "close with", "answer with", "answer only",
 	"and remember", "and if you can", "ends with ",
-	"the visit", "no titles", "no explanation",
+	"the visit detail", "the visit show", "the visit end",
+	"no titles", "no explanation",
 	// "remember" followed by instruction markers
 	"remember,", "remember:", "remember you",
 	// Structured data / HTTP echoes
@@ -518,6 +557,13 @@ var noisePrefixes = []string{
 	"text speed",      // structured data echo
 	"last-modified",   // HTTP header echo
 	"server:",         // HTTP header echo (colon prevents matching prose "server")
+	"question: ",      // Phi self-assignment: "Question: Craft a sestet..."
+	"this visitor is ", // Phi echoes "This visitor is new/searching/alone..."
+	"this door is ",   // Phi echoes "This door is empty..."
+	"don't spell",     // "Don't spell out this much"
+	"no more.",        // "No more." as instruction line
+	"no names",        // "No names, just a story..."
+	"you could say ",  // Phi generating commentary: "You could say this visitor..."
 	// Self-generated constraints (Granite writes rules for itself before poems)
 	"reflect on ", "contrast ",
 	"no other ", "the word ",
@@ -526,6 +572,48 @@ var noisePrefixes = []string{
 	"your poem ", "in your ",
 	"poem must ", "poem should ",
 	"haiku:",
+}
+
+// deduplicateLines collapses repetition loops where Phi gets stuck repeating
+// the same line. If any non-blank line appears 3+ times, only the first
+// occurrence is kept.
+func deduplicateLines(s string) string {
+	lines := strings.Split(s, "\n")
+	// Count occurrences of each non-blank line
+	counts := make(map[string]int)
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed != "" {
+			counts[trimmed]++
+		}
+	}
+	// Check if any line is repeated 3+ times
+	hasLoop := false
+	for _, c := range counts {
+		if c >= 3 {
+			hasLoop = true
+			break
+		}
+	}
+	if !hasLoop {
+		return s
+	}
+	// Keep only first occurrence of repeated lines
+	seen := make(map[string]bool)
+	var out []string
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" {
+			out = append(out, l)
+			continue
+		}
+		if counts[trimmed] >= 3 && seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n")
 }
 
 // hasASCIILetter returns true if the string contains at least one a-zA-Z.
