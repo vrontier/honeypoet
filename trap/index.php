@@ -231,10 +231,10 @@ if ($clean_path === '/_api/museum' && $method === 'GET') {
             GROUP BY v.city, v.country ORDER BY count DESC LIMIT 15
         ')->fetchAll();
 
-        // Weekly exhibits — best poems from last 4 weeks
+        // Weekly exhibits — best poems from last 12 weeks (carousel can browse back)
         // "Best" = moderate length (80-400 chars), no repetition loops, random selection
         $exhibits = [];
-        for ($w = 0; $w < 4; $w++) {
+        for ($w = 0; $w < 12; $w++) {
             $weekStart = date('Y-m-d', strtotime("monday this week -" . ($w * 7) . " days"));
             $weekEnd   = date('Y-m-d', strtotime($weekStart . " +7 days"));
             $weekLabel = date('Y-\\WW', strtotime($weekStart));
@@ -348,7 +348,7 @@ if ($clean_path === '/_api/museum' && $method === 'GET') {
         } catch (\PDOException $e) {}
 
         header('Content-Type: application/json');
-        header('Cache-Control: public, max-age=300');
+        header('Cache-Control: no-store, must-revalidate');
         header('Access-Control-Allow-Origin: *');
         echo json_encode([
             'countries'    => $countries,
@@ -1697,9 +1697,14 @@ function serve_museum(): void
             color: rgba(0,0,0,0.45); min-width: 50px; text-align: right;
         }
 
-        /* Week tabs */
+        /* Week carousel */
+        .week-carousel {
+            display: flex; align-items: center; gap: 8px;
+            margin-bottom: 16px;
+        }
         .week-tabs {
-            display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px;
+            display: flex; gap: 6px; flex: 1; justify-content: center;
+            flex-wrap: wrap;
         }
         .week-tab {
             font-family: 'Courier New', monospace; font-size: 12px;
@@ -1709,6 +1714,14 @@ function serve_museum(): void
         }
         .week-tab:hover { background: rgba(0,0,0,0.05); }
         .week-tab.active { background: rgba(0,0,0,0.1); }
+        .week-arrow {
+            font-family: 'Courier New', monospace; font-size: 16px;
+            border: 1px solid rgba(0,0,0,0.2); background: none;
+            width: 32px; height: 28px; border-radius: 3px; cursor: pointer;
+            color: #222; transition: background 0.2s; line-height: 1;
+        }
+        .week-arrow:hover:not(:disabled) { background: rgba(0,0,0,0.05); }
+        .week-arrow:disabled { opacity: 0.25; cursor: default; }
 
         /* Poem exhibit cards */
         .exhibit {
@@ -1863,8 +1876,13 @@ function serve_museum(): void
         <h2 style="margin-top:32px">Top Cities</h2>
         <div id="cities"></div>
 
-        <h2>This Week's Exhibition</h2>
-        <div id="week-tabs" class="week-tabs"></div>
+        <h2>Weekly Exhibitions</h2>
+        <p class="intro">Each week, the museum curates a handful of poems. The three most recent weeks are shown first &mdash; use the arrows to walk back through earlier exhibitions.</p>
+        <div class="week-carousel">
+            <button id="week-prev" class="week-arrow" aria-label="Older weeks">&larr;</button>
+            <div id="week-tabs" class="week-tabs"></div>
+            <button id="week-next" class="week-arrow" aria-label="Newer weeks">&rarr;</button>
+        </div>
         <div id="exhibits"></div>
 
         <h2>Museum Engagement Report</h2>
@@ -1974,22 +1992,51 @@ function serve_museum(): void
             document.getElementById(container).innerHTML = html || '<div class="empty">No data yet.</div>';
         }
 
+        // Carousel state: weeks sorted newest-first; windowStart = index of
+        // leftmost visible tab; WINDOW_SIZE visible at a time.
+        var WINDOW_SIZE = 3;
+        var exhibitsState = { weeks: [], windowStart: 0, active: null, data: {} };
+
         function renderExhibits(exhibits, activeWeek) {
             var weeks = Object.keys(exhibits).sort().reverse();
+            exhibitsState.data = exhibits;
+            exhibitsState.weeks = weeks;
+
             if (weeks.length === 0) {
                 document.getElementById('week-tabs').innerHTML = '';
                 document.getElementById('exhibits').innerHTML = '<div class="empty">The first exhibition is being prepared&hellip;</div>';
+                document.getElementById('week-prev').disabled = true;
+                document.getElementById('week-next').disabled = true;
                 return;
             }
 
             if (!activeWeek || weeks.indexOf(activeWeek) === -1) activeWeek = weeks[0];
+            exhibitsState.active = activeWeek;
 
+            // Ensure the active week is within the visible window
+            var activeIdx = weeks.indexOf(activeWeek);
+            if (activeIdx < exhibitsState.windowStart) exhibitsState.windowStart = activeIdx;
+            if (activeIdx >= exhibitsState.windowStart + WINDOW_SIZE) {
+                exhibitsState.windowStart = activeIdx - WINDOW_SIZE + 1;
+            }
+            if (exhibitsState.windowStart < 0) exhibitsState.windowStart = 0;
+            if (exhibitsState.windowStart > Math.max(0, weeks.length - WINDOW_SIZE)) {
+                exhibitsState.windowStart = Math.max(0, weeks.length - WINDOW_SIZE);
+            }
+
+            // Display oldest→newest (left→right), so reverse the slice.
+            var visible = weeks.slice(exhibitsState.windowStart, exhibitsState.windowStart + WINDOW_SIZE).slice().reverse();
             var tabsHtml = '';
-            for (var i = 0; i < weeks.length; i++) {
-                var cls = weeks[i] === activeWeek ? ' active' : '';
-                tabsHtml += '<button class="week-tab' + cls + '" data-week="' + esc(weeks[i]) + '">' + esc(weeks[i]) + '</button>';
+            for (var i = 0; i < visible.length; i++) {
+                var cls = visible[i] === activeWeek ? ' active' : '';
+                tabsHtml += '<button class="week-tab' + cls + '" data-week="' + esc(visible[i]) + '">' + esc(visible[i]) + '</button>';
             }
             document.getElementById('week-tabs').innerHTML = tabsHtml;
+
+            // Arrow state — newer is left-of-window (smaller index since sorted desc),
+            // older is right-of-window (larger index).
+            document.getElementById('week-next').disabled = (exhibitsState.windowStart === 0);
+            document.getElementById('week-prev').disabled = (exhibitsState.windowStart + WINDOW_SIZE >= weeks.length);
 
             var poems = exhibits[activeWeek] || [];
             var html = '';
@@ -2021,9 +2068,29 @@ function serve_museum(): void
             // Tab click handlers
             var tabs = document.querySelectorAll('.week-tab');
             for (var k = 0; k < tabs.length; k++) {
-                tabs[k].onclick = function() { renderExhibits(exhibits, this.getAttribute('data-week')); };
+                tabs[k].onclick = function() { renderExhibits(exhibitsState.data, this.getAttribute('data-week')); };
             }
         }
+
+        // Arrow handlers — flip the window one full page (WINDOW_SIZE weeks)
+        // at a time, like pages in a book. Active week = newest in the new page.
+        document.getElementById('week-prev').onclick = function() {
+            var weeks = exhibitsState.weeks;
+            var newStart = exhibitsState.windowStart + WINDOW_SIZE;
+            if (newStart > weeks.length - WINDOW_SIZE) newStart = weeks.length - WINDOW_SIZE;
+            if (newStart < 0) newStart = 0;
+            if (newStart === exhibitsState.windowStart) return;
+            exhibitsState.windowStart = newStart;
+            renderExhibits(exhibitsState.data, weeks[newStart]);
+        };
+        document.getElementById('week-next').onclick = function() {
+            var weeks = exhibitsState.weeks;
+            var newStart = exhibitsState.windowStart - WINDOW_SIZE;
+            if (newStart < 0) newStart = 0;
+            if (newStart === exhibitsState.windowStart) return;
+            exhibitsState.windowStart = newStart;
+            renderExhibits(exhibitsState.data, weeks[newStart]);
+        };
 
         // Fetch and render
         fetch('/_api/museum')
