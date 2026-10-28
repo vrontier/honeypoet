@@ -345,7 +345,9 @@ func processVisits(db *sql.DB, llm *llmClient, batchSize int) {
 }
 
 // findRecentPoem looks for an existing LLM poem from the same visitor and attack
-// category within 1 hour.
+// category within 1 hour. visits.timestamp is ISO 8601 ("2026-10-28T22:40:25Z"), so
+// the cutoff must use the same format — datetime('now') gives a space instead
+// of T, and the string comparison would match until midnight UTC.
 func findRecentPoem(db *sql.DB, visitorID int64, category string) (responseType, poem string, found bool) {
 	err := db.QueryRow(`
 		SELECT response_type, response_content
@@ -353,7 +355,7 @@ func findRecentPoem(db *sql.DB, visitorID int64, category string) (responseType,
 		WHERE visitor_id = ?
 		  AND attack_category = ?
 		  AND llm_generated = 1
-		  AND timestamp >= datetime('now', '-1 hour')
+		  AND timestamp >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hour')
 		ORDER BY id DESC
 		LIMIT 1
 	`, visitorID, category).Scan(&responseType, &poem)
