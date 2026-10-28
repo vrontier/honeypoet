@@ -142,7 +142,7 @@ func fillPool(db *sql.DB, llm *llmClient) {
 	}
 
 	prompt, respType := promptForVisit(v, bestBeh)
-	poem, err := llm.generate(prompt)
+	poem, err := llm.generate(prompt, respType)
 	if err != nil {
 		log.Printf("pool fill error (%s/%s): %v", bestCat, bestBeh, err)
 		return

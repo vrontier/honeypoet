@@ -314,7 +314,7 @@ func processVisits(db *sql.DB, llm *llmClient, batchSize int) {
 		}
 
 		prompt, respType := promptForVisit(v, behavior)
-		poem, err := llm.generate(prompt)
+		poem, err := llm.generate(prompt, respType)
 		if err != nil {
 			log.Printf("LLM error for visit %d (%s %s): %v", v.ID, v.Method, v.Path, err)
 			// Mark as processed with llm_generated = -1 to avoid retrying forever
@@ -423,6 +423,7 @@ func responseTypeFor(category string) string {
 // runCleanup re-runs cleanPoem on all stored poems, reconstructing the original
 // prompt for prompt-aware echo detection. Poems that become empty are marked as
 // failed. This is for one-time use after improving the cleanup logic.
+// Code-poems are skipped: cleanPoem would strip their code lines.
 func runCleanup(db *sql.DB, dryRun bool) {
 	rows, err := db.Query(`
 		SELECT v.id, v.response_content, v.path, v.method,
@@ -433,6 +434,7 @@ func runCleanup(db *sql.DB, dryRun bool) {
 		FROM visits v
 		LEFT JOIN visitors vr ON v.visitor_id = vr.id
 		WHERE v.llm_generated = 1 AND v.response_content IS NOT NULL
+			AND COALESCE(v.response_type, '') != 'llm_code'
 		ORDER BY v.id
 	`)
 	if err != nil {

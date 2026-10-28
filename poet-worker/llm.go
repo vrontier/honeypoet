@@ -30,7 +30,7 @@ var httpHeaderPattern = regexp.MustCompile(`(?i)^-?\s*(?:status:\s*\d|location:\
 
 // formLabels are poetry form names and meta-content markers. When these appear
 // in a section after a blank line, that section (and everything after) is
-// truncated — it's Granite generating variations, not continuing the poem.
+// truncated — it's the model generating variations, not continuing the poem.
 var formLabels = []string{
 	"haiku", "tanka", "haibun", "villanelle", "sonnet", "limerick",
 	"syllable", "5-7-5",
@@ -40,9 +40,10 @@ var formLabels = []string{
 var jsonBlockPattern = regexp.MustCompile(`(?s)\{[^{}]*\}`)
 var markdownBoldPattern = regexp.MustCompile(`\*\*([^*]+)\*\*`)
 
-// llmClient talks to an OpenAI-compatible API. When apiKey is set, it uses
-// the /v1/chat/completions endpoint with Bearer auth (cloud providers).
-// Otherwise it uses the legacy /v1/completions endpoint (local llama-server).
+// llmClient talks to an OpenAI-compatible /v1/chat/completions endpoint.
+// Local llama-server applies the model's chat template there, so an instruct
+// model (Phi-4-mini) answers the prompt instead of continuing it as a document.
+// When apiKey is set (cloud providers), it is sent as a Bearer token.
 type llmClient struct {
 	baseURL    string
 	apiKey     string
@@ -57,25 +58,10 @@ func newLLMClient(baseURL, apiKey, model string) *llmClient {
 		apiKey:  apiKey,
 		model:   model,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second, // Granite can be slow on CPU
+			Timeout: 120 * time.Second, // local CPU inference can be slow
 		},
 		maxTokens: 150,
 	}
-}
-
-// completionRequest is the OpenAI /v1/completions request body.
-type completionRequest struct {
-	Prompt      string  `json:"prompt"`
-	MaxTokens   int     `json:"max_tokens"`
-	Temperature float64 `json:"temperature"`
-	Stop        []string `json:"stop,omitempty"`
-}
-
-// completionResponse is the OpenAI /v1/completions response body.
-type completionResponse struct {
-	Choices []struct {
-		Text string `json:"text"`
-	} `json:"choices"`
 }
 
 // chatMessage is a single message in a chat completions request/response.
@@ -100,67 +86,49 @@ type chatResponse struct {
 	} `json:"choices"`
 }
 
-// generate sends a prompt to the LLM and returns the generated text.
-// When an API key is configured, it uses the chat completions endpoint;
-// otherwise it falls back to the legacy completions endpoint.
-func (c *llmClient) generate(prompt string) (string, error) {
-	if c.apiKey != "" {
-		return c.generateChat(prompt)
+// Generation settings per output kind. Verse stops at the first blank line,
+// which keeps the model from appending a second variation or commentary.
+// Code-poems need blank lines (between imports and functions), so they only
+// stop on "Note:" and get more room; cleanCode keeps the fenced block.
+var (
+	verseStops = []string{"\n\n", "\nNote:"}
+	codeStops  = []string{"\nNote:"}
+)
+
+const codeMaxTokens = 300
+
+// generate sends a prompt to the LLM and returns the cleaned poem. respType
+// is the response type from promptForVisit; "llm_code" selects code-poem
+// settings and cleaning.
+//
+// It always uses /v1/chat/completions. The raw /v1/completions endpoint was
+// dropped (Oct 2026): without a chat template Phi-4-mini continued the prompt
+// document — instruction lines, invented "- IP:" metadata — instead of
+// writing a poem, which caused most of the ~20% LLM failure rate.
+func (c *llmClient) generate(prompt, respType string) (string, error) {
+	if respType == "llm_code" {
+		raw, err := c.chat(prompt, codeMaxTokens, codeStops)
+		if err != nil {
+			return "", err
+		}
+		return cleanCode(raw), nil
 	}
-	return c.generateLegacy(prompt)
+	raw, err := c.chat(prompt, c.maxTokens, verseStops)
+	if err != nil {
+		return "", err
+	}
+	return cleanPoem(raw, prompt), nil
 }
 
-// generateLegacy uses the /v1/completions endpoint (local llama-server).
-func (c *llmClient) generateLegacy(prompt string) (string, error) {
-	reqBody := completionRequest{
-		Prompt:      prompt,
-		MaxTokens:   c.maxTokens,
-		Temperature: 0.8,
-		Stop:        []string{"\n\n", "\nNote:"},
-	}
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", c.baseURL+"/v1/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("LLM request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", fmt.Errorf("LLM returned %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var result completionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
-	}
-
-	if len(result.Choices) == 0 || strings.TrimSpace(result.Choices[0].Text) == "" {
-		return "", fmt.Errorf("LLM returned empty response")
-	}
-
-	return cleanPoem(result.Choices[0].Text, prompt), nil
-}
-
-// generateChat uses the /v1/chat/completions endpoint (cloud providers).
-func (c *llmClient) generateChat(prompt string) (string, error) {
+// chat sends a single user message to /v1/chat/completions and returns the
+// raw reply. The Authorization header is only sent when an API key is set.
+func (c *llmClient) chat(prompt string, maxTokens int, stops []string) (string, error) {
 	reqBody := chatRequest{
 		Model:       c.model,
 		Messages:    []chatMessage{{Role: "user", Content: prompt}},
-		MaxTokens:   c.maxTokens,
+		MaxTokens:   maxTokens,
 		Temperature: 0.8,
-		Stop:        []string{"\n\n", "\nNote:"},
+		Stop:        stops,
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -173,7 +141,9 @@ func (c *llmClient) generateChat(prompt string) (string, error) {
 		return "", fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -195,8 +165,32 @@ func (c *llmClient) generateChat(prompt string) (string, error) {
 		return "", fmt.Errorf("LLM returned empty response")
 	}
 
-	return cleanPoem(result.Choices[0].Message.Content, prompt), nil
+	return result.Choices[0].Message.Content, nil
 }
+
+// codeFencePattern captures the body of the first fenced code block. A
+// missing closing fence (reply cut off by max_tokens) takes the rest.
+var codeFencePattern = regexp.MustCompile("(?s)```[^\n]*\n(.*?)(?:```|$)")
+
+// cleanCode extracts a code-poem from the reply. Unlike cleanPoem it leaves
+// lines alone: "use strict;", closing braces and blank lines are the poem.
+func cleanCode(raw string) string {
+	s := strings.TrimSpace(raw)
+	if m := codeFencePattern.FindStringSubmatch(s); m != nil {
+		s = m[1]
+	}
+	s = strings.ReplaceAll(s, "```", "")
+	s = ipPattern.ReplaceAllString(s, "")
+	s = strings.TrimSpace(s)
+	if !hasASCIILetter(s) || len(s) < 15 {
+		return ""
+	}
+	return s
+}
+
+// minEchoCoverage is the percentage of a prompt line a response line must
+// cover to count as an echo of it.
+const minEchoCoverage = 75
 
 // promptPhrases extracts normalized phrases (>= 20 chars) from the prompt
 // for echo detection. Short fragments are skipped to avoid false positives.
@@ -216,6 +210,10 @@ func promptPhrases(prompt string) []string {
 }
 
 // isPromptEcho returns true if a response line echoes content from the prompt.
+// A line that is only a fragment of a prompt line counts as an echo when it
+// covers most of that line (minEchoCoverage). Short fragments are normal
+// poem content: the city name from "- From: Frankfurt am Main, DE", or the
+// theme image from the end of the prompt.
 func isPromptEcho(line string, phrases []string) bool {
 	lower := strings.ToLower(strings.TrimSpace(line))
 	// Strip leading list markers for comparison
@@ -226,8 +224,8 @@ func isPromptEcho(line string, phrases []string) bool {
 		return false
 	}
 	for _, phrase := range phrases {
-		// Response line is a substring of a prompt line
-		if strings.Contains(phrase, check) {
+		// Response line is most of a prompt line
+		if strings.Contains(phrase, check) && len(check)*100 >= len(phrase)*minEchoCoverage {
 			return true
 		}
 		// Prompt phrase appears in the response line
@@ -238,8 +236,9 @@ func isPromptEcho(line string, phrases []string) bool {
 	return false
 }
 
-// cleanPoem strips LLM noise — Granite sometimes echoes instructions, emits
-// JSON, dumps HTML/CSS, spams emoji, or adds meta-commentary around the verse.
+// cleanPoem strips LLM noise — the model (Granite, then Phi) sometimes echoes
+// instructions, emits JSON, dumps HTML/CSS, spams emoji, or adds
+// meta-commentary around the verse.
 // The prompt parameter enables echo detection: response lines that match prompt
 // content are stripped. Pass "" to skip prompt-aware cleaning (e.g. for cleanup).
 func cleanPoem(raw string, prompt string) string {
@@ -264,7 +263,7 @@ func cleanPoem(raw string, prompt string) string {
 	}
 
 	// If the model separated content with --- (multiple sections), take the
-	// last segment that contains actual poem content. Granite sometimes
+	// last segment that contains actual poem content. The model sometimes
 	// generates self-instructions or meta-commentary in separate sections.
 	if strings.Contains(s, "\n---") {
 		segments := strings.Split(s, "\n---")
@@ -274,7 +273,7 @@ func cleanPoem(raw string, prompt string) string {
 			if seg == "" {
 				continue
 			}
-			// Strip "Answer:" prefix — Granite sometimes writes this before poems
+			// Strip "Answer:" prefix — the model sometimes writes this before poems
 			if len(seg) > 7 && strings.HasPrefix(strings.ToLower(seg), "answer:") {
 				seg = strings.TrimSpace(seg[7:])
 			}
@@ -474,7 +473,7 @@ func isNoiseLine(raw string) bool {
 	if strings.HasPrefix(lower, "the visit") && !strings.HasPrefix(lower, "the visitor") {
 		return true
 	}
-	// Instruction echo prefixes — expanded from observed Granite outputs
+	// Instruction echo prefixes — expanded from observed Granite and Phi outputs
 	for _, prefix := range noisePrefixes {
 		if strings.HasPrefix(lower, prefix) {
 			return true
@@ -528,7 +527,7 @@ var noisePrefixes = []string{
 	"get /", "post /", "put /", "delete /", "head /",
 	// Title/heading echoes
 	"visitor details", "poem:",
-	// Self-generated instructions (Granite sometimes writes these before poems)
+	// Self-generated instructions (the model sometimes writes these before poems)
 	"each line should", "each line must",
 	"no more, no less",
 	"constraints:",
@@ -537,12 +536,12 @@ var noisePrefixes = []string{
 	// Prompt template echoes
 	"- title:", "title:",
 	"- lines:", "lines:",
-	// Multi-poem generation (Granite sometimes generates variations)
+	// Multi-poem generation (the model sometimes generates variations)
 	"haibun ", "5.7.5 ",
 	// Code-poem instruction prefixes
 	"no html", "no jokes", "no commentary",
 	"remember to ", "no dark ",
-	// Granite sometimes labels output with the persona name
+	// The model sometimes labels output with the persona name
 	"honeypoet:", "honeypoet writes", "the honeypoet writes",
 	"honeypoet's poem", "the honeypoet's poem",
 	// Phi instruction echoes
@@ -564,7 +563,7 @@ var noisePrefixes = []string{
 	"no more.",        // "No more." as instruction line
 	"no names",        // "No names, just a story..."
 	"you could say ",  // Phi generating commentary: "You could say this visitor..."
-	// Self-generated constraints (Granite writes rules for itself before poems)
+	// Self-generated constraints (the model writes rules for itself before poems)
 	"reflect on ", "contrast ",
 	"no other ", "the word ",
 	"lines of ", "please adhere",

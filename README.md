@@ -121,7 +121,7 @@ The poems for the gallery are generated asynchronously — the bot gets the trap
 
 ## Running your own
 
-You'll need NGINX (or any reverse proxy), PHP 8.3+, SQLite, and a MaxMind GeoLite2 database. The trap layer works standalone — point your proxy at `trap/index.php` and it starts catching. For LLM-generated poems, point the Go worker at any OpenAI-compatible completions endpoint — copy `poet-worker/config.example.yaml` to `config.yaml` and adjust for your environment. See `DESIGN.md` in the repo for the full architecture.
+You'll need NGINX (or any reverse proxy), PHP 8.3+, SQLite, and a MaxMind GeoLite2 database. The trap layer works standalone — point your proxy at `trap/index.php` and it starts catching. For LLM-generated poems, point the Go worker at any OpenAI-compatible chat completions endpoint — copy `poet-worker/config.example.yaml` to `config.yaml` and adjust for your environment. See `DESIGN.md` in the repo for the full architecture.
 
 ---
 

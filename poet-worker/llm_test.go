@@ -1,6 +1,170 @@
 package main
 
-import "testing"
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+// TestGenerateEndpoint checks that generate always uses the chat endpoint and
+// only sends an Authorization header when an API key is configured.
+func TestGenerateEndpoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		apiKey   string
+		model    string
+		wantAuth string
+	}{
+		{name: "local llama-server, no key", apiKey: "", model: "", wantAuth: ""},
+		{name: "cloud provider with key", apiKey: "sk-test", model: "gpt-4o-mini", wantAuth: "Bearer sk-test"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotPath, gotAuth string
+			var gotReq chatRequest
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				gotAuth = r.Header.Get("Authorization")
+				_, hasAuth := r.Header["Authorization"]
+				if tt.apiKey == "" && hasAuth {
+					t.Errorf("Authorization header sent without an API key: %q", gotAuth)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+					t.Errorf("decode request: %v", err)
+				}
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"A quiet knock upon the door,\nThe server hums forevermore."}}]}`))
+			}))
+			defer srv.Close()
+
+			c := newLLMClient(srv.URL+"/", tt.apiKey, tt.model)
+			got, err := c.generate("Write a poem.", "llm_verse")
+			if err != nil {
+				t.Fatalf("generate() error: %v", err)
+			}
+			if gotPath != "/v1/chat/completions" {
+				t.Errorf("path = %q, want /v1/chat/completions", gotPath)
+			}
+			if gotAuth != tt.wantAuth {
+				t.Errorf("Authorization = %q, want %q", gotAuth, tt.wantAuth)
+			}
+			if gotReq.Model != tt.model {
+				t.Errorf("model = %q, want %q", gotReq.Model, tt.model)
+			}
+			if len(gotReq.Messages) != 1 || gotReq.Messages[0].Role != "user" || gotReq.Messages[0].Content != "Write a poem." {
+				t.Errorf("messages = %+v, want single user message", gotReq.Messages)
+			}
+			if gotReq.MaxTokens != 150 || len(gotReq.Stop) != 2 || gotReq.Stop[0] != "\n\n" {
+				t.Errorf("verse settings: max_tokens=%d stop=%q", gotReq.MaxTokens, gotReq.Stop)
+			}
+			if want := "A quiet knock upon the door,\nThe server hums forevermore."; got != want {
+				t.Errorf("generate() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestGenerateCode checks code-poems are generated without the blank-line
+// stop (code has blank lines) and cleaned with cleanCode, not cleanPoem.
+func TestGenerateCode(t *testing.T) {
+	var gotReq chatRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"` + "```" + `perl\nuse strict;\n\nmy $seeker = \"door\";\n` + "```" + `"}}]}`))
+	}))
+	defer srv.Close()
+
+	got, err := newLLMClient(srv.URL, "", "").generate("Write code.", "llm_code")
+	if err != nil {
+		t.Fatalf("generate() error: %v", err)
+	}
+	for _, stop := range gotReq.Stop {
+		if stop == "\n\n" {
+			t.Errorf("code request has blank-line stop: %q", gotReq.Stop)
+		}
+	}
+	if gotReq.MaxTokens != codeMaxTokens {
+		t.Errorf("max_tokens = %d, want %d", gotReq.MaxTokens, codeMaxTokens)
+	}
+	if want := "use strict;\n\nmy $seeker = \"door\";"; got != want {
+		t.Errorf("generate() = %q, want %q", got, want)
+	}
+}
+
+func TestCleanCode(t *testing.T) {
+	fence := "```"
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "fenced block keeps blank lines and braces",
+			raw:  fence + "c\n#include <stdio.h>\n\nint main() {\n  printf(\"knock\\n\");\n  return 0;\n}\n" + fence,
+			want: "#include <stdio.h>\n\nint main() {\n  printf(\"knock\\n\");\n  return 0;\n}",
+		},
+		{
+			name: "prose around the fence is dropped",
+			raw:  "Here's a little program:\n" + fence + "python\nseeker = \"door\"\nprint(seeker)\n" + fence + "\nThis program greets the seeker.",
+			want: "seeker = \"door\"\nprint(seeker)",
+		},
+		{
+			name: "unfenced code kept as is",
+			raw:  "10 PRINT \"A seeker knocks\"\n20 END",
+			want: "10 PRINT \"A seeker knocks\"\n20 END",
+		},
+		{
+			name: "unclosed fence (cut off) takes the rest",
+			raw:  fence + "go\nfunc main() {\n\tseeker := \"door\"",
+			want: "func main() {\n\tseeker := \"door\"",
+		},
+		{
+			name: "IP addresses stripped",
+			raw:  "echo \"knock from 10.0.0.1 at the door\"",
+			want: "echo \"knock from  at the door\"",
+		},
+		{
+			name: "empty fence",
+			raw:  fence + "rust\n" + fence,
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cleanCode(tt.raw); got != tt.want {
+				t.Errorf("cleanCode() =\n%q\nwant:\n%q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGenerateErrors checks HTTP errors and empty content are reported.
+func TestGenerateErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "server error", status: http.StatusInternalServerError, body: `{"error":"boom"}`},
+		{name: "no choices", status: http.StatusOK, body: `{"choices":[]}`},
+		{name: "blank content", status: http.StatusOK, body: `{"choices":[{"message":{"role":"assistant","content":"  \n"}}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+			if _, err := newLLMClient(srv.URL, "", "").generate("Write a poem.", "llm_verse"); err == nil {
+				t.Error("generate() error = nil, want error")
+			}
+		})
+	}
+}
 
 func TestCleanPoem(t *testing.T) {
 	tests := []struct {
@@ -204,6 +368,26 @@ func TestCleanPoem(t *testing.T) {
 			raw:    "- Path: /wp-admin/setup-config.php\n- From: Stockholm, SE\n\nThe pilgrim returns,\nKnocking on the fog again,\nNo WordPress was here.",
 			prompt: "Preamble here.\n\nA scanner just probed:\n- Path: /wp-admin/setup-config.php\n- From: Stockholm, SE\n\nHaiku:\n",
 			want:   "The pilgrim returns,\nKnocking on the fog again,\nNo WordPress was here.",
+		},
+		// Chat-endpoint output reuses prompt context as poem material (Oct 2026).
+		// Fragments of a prompt line must not truncate the poem.
+		{
+			name:   "prompt echo: city name line is not an echo",
+			raw:    "A shadow at the gate, then gone,\nFrankfurt am Main,\nwe leave the light on.",
+			prompt: "Preamble here.\n\nA ghostly visitor just knocked on this door:\n- Path: /wp-login.php\n- From: Frankfurt am Main, DE\n\nShort poem (4-8 lines):\n",
+			want:   "A shadow at the gate, then gone,\nFrankfurt am Main,\nwe leave the light on.",
+		},
+		{
+			name:   "prompt echo: theme image fragment is not an echo",
+			raw:    "A knock, and then the hush again,\na single footprint on a beach,\nfilling slowly with the sea.",
+			prompt: "Preamble here.\n\nA ghostly visitor just knocked on this door:\n- Path: /\n\nShort poem (4-8 lines) about this visit, evoking a single footprint on a beach, already filling with water:\n",
+			want:   "A knock, and then the hush again,\na single footprint on a beach,\nfilling slowly with the sea.",
+		},
+		{
+			name:   "prompt echo: near-complete prompt line still truncates",
+			raw:    "Waves lap at the shore.\nShort poem (4-8 lines) about this visit\nAnother wave comes.",
+			prompt: "Preamble here.\n\nShort poem (4-8 lines) about this visit:\n",
+			want:   "Waves lap at the shore.",
 		},
 		// --- Phi-specific failure patterns (observed Mar 2026) ---
 		{

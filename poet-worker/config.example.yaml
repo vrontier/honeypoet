@@ -10,8 +10,9 @@ db: /path/to/honeypoet.db
 llm_url: http://your-llm-server:8080
 
 # Cloud LLM provider settings (optional)
-# When llm_api_key is set, the worker uses /v1/chat/completions with Bearer auth.
-# When omitted, it uses the legacy /v1/completions endpoint (local llama-server).
+# The worker always uses /v1/chat/completions (llama-server applies the model's
+# chat template there). When llm_api_key is set, it is sent as a Bearer token;
+# a local llama-server needs no key and no model name.
 # llm_api_key: sk-your-api-key-here
 # llm_model: gpt-4o-mini
 #
